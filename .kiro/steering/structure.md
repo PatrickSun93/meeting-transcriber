@@ -1,95 +1,29 @@
-# Project Structure & Organization
+# Project Structure
 
-## Root Directory Structure
 ```
-├── src/                    # Source code
-│   ├── client/            # React frontend application
-│   ├── server/            # Express.js backend
-│   └── teams/             # Teams-specific integration code
-├── tests/                 # Test suites organized by type
-├── docs/                  # Documentation
-├── scripts/               # Build and utility scripts
-├── assets/                # App icons and static resources
-├── public/                # Static files served by webpack
-├── teams-app-package/     # Teams app manifest and assets
-└── test-results/          # Generated test reports
-```
-
-## Client Application Structure (`src/client/`)
-```
-├── components/            # React components
-│   ├── __tests__/        # Component unit tests
-│   └── *.css             # Component-specific styles
-├── services/             # Business logic and API services
-│   ├── __tests__/        # Service unit tests
-│   └── ai-providers/     # AI service implementations
-├── hooks/                # Custom React hooks
-│   └── __tests__/        # Hook tests
-├── App.js                # Main application component
-├── index.js              # Application entry point
-└── config.html           # Teams configuration page
+src/
+  server/
+    index.js        # starts HTTP(S) server, preloads the Whisper model
+    app.js          # Express app: /api/health, /api/transcribe, static client
+    whisper.js      # local Whisper pipeline, serial queue, hallucination filter
+  client/
+    index.js, App.js        # entry; routes /config vs /tab, Teams init and theme
+    teams.js                # Teams SDK wrapper (init with timeout, tab config)
+    transcribeClient.js     # fetch wrappers for the server API
+    audio/
+      dsp.js                # downsample to 16 kHz, rms, concat
+      SpeechChunker.js      # splits audio into utterances at pauses
+      MicRecorder.js        # getUserMedia + ScriptProcessor -> SpeechChunker
+    components/
+      TranscriptionTab.js   # main UI
+      ConfigPage.js         # configurable tab setup page
+public/index.html   # HTML template
+teams-app/          # manifest template and icons
+scripts/            # make-certs.sh, package-teams-app.js
+tests/              # Jest tests
+browser-extension/, desktop-app/  # earlier multi-platform work, not part of the demo
 ```
 
-## Testing Organization (`tests/`)
-```
-├── accessibility/        # Accessibility compliance tests
-├── e2e/                 # End-to-end workflow tests
-├── integration/         # Cross-service integration tests
-├── performance/         # Performance and load tests
-├── security/            # Security validation tests
-└── utils/               # Test utilities and setup
-```
-
-## Naming Conventions
-
-### Files & Directories
-- **Components**: PascalCase (e.g., `ConfigurationPanel.js`)
-- **Services**: PascalCase (e.g., `TranscriptionEngine.js`)
-- **Hooks**: camelCase starting with 'use' (e.g., `useConfiguration.js`)
-- **Tests**: Match source file + `.test.js` or `.spec.js`
-- **Styles**: Match component name + `.css`
-
-### Code Conventions
-- **Variables**: camelCase
-- **Constants**: UPPER_SNAKE_CASE
-- **Functions**: camelCase with descriptive verbs
-- **Classes**: PascalCase
-- **Private methods**: Prefix with underscore `_methodName`
-
-## Component Architecture Patterns
-
-### Service Integration
-- Components receive services via props (dependency injection)
-- Services are instantiated in parent components or App.js
-- SecurityManager integration is consistent across all services
-
-### State Management
-- Local state with useState for component-specific data
-- Custom hooks for shared state logic
-- Configuration managed through ConfigurationManager service
-
-### Error Handling
-- Error boundaries for component-level error catching
-- Service-level error handling with recovery strategies
-- User-friendly error messages in UI components
-
-## File Organization Rules
-
-### Component Files
-Each component should have:
-- Main component file (`.js`)
-- Stylesheet (`.css`) 
-- Test file (`__tests__/ComponentName.test.js`)
-
-### Service Files
-Each service should have:
-- Main service class file
-- Comprehensive test coverage
-- Clear public API with JSDoc comments
-- Error handling and validation
-
-### Import Conventions
-- Relative imports for local files (`./`, `../`)
-- Absolute imports for external packages
-- Services imported at component level, not globally
-- CSS imports after JS imports in components
+## Conventions
+- Pure audio logic lives in `src/client/audio` and is unit tested without a browser.
+- The server takes its Whisper instance by injection (`createApp({ whisper })`) so tests use a fake.

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "1d1db724-acdb-41db-a503-a18306732942",
+  "developer": {
+    "name": "Meeting Transcription Demo",
+    "websiteUrl": "{{APP_URL}}",
+    "privacyUrl": "{{APP_URL}}",
+    "termsOfUseUrl": "{{APP_URL}}"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Meeting Transcription",
+    "full": "Meeting Transcription (local Whisper)"
+  },
+  "description": {
+    "short": "Live transcription of your microphone with a local Whisper model.",
+    "full": "Transcribes what you say during a Teams meeting, in a side panel. Speech is turned into text on your own computer with an OpenAI Whisper model; audio is never sent to a cloud service."
+  },
+  "accentColor": "#5B5FC7",
+  "configurableTabs": [
+    {
+      "configurationUrl": "{{APP_URL}}/config",
+      "canUpdateConfiguration": false,
+      "scopes": ["groupChat", "team"],
+      "context": ["meetingSidePanel", "meetingChatTab", "meetingDetailsTab", "channelTab", "privateChatTab"]
+    }
+  ],
+  "staticTabs": [
+    {
+      "entityId": "transcription",
+      "name": "Transcription",
+      "contentUrl": "{{APP_URL}}/tab",
+      "websiteUrl": "{{APP_URL}}/tab",
+      "scopes": ["personal"]
+    }
+  ],
+  "permissions": ["identity"],
+  "devicePermissions": ["media"],
+  "validDomains": ["{{APP_HOST}}"]
+}

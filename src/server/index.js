@@ -1,51 +1,32 @@
-// Express server for Teams app
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
+// Starts the server. Teams only loads tabs over HTTPS, so this serves HTTPS
+// when certificates exist in ./certs (see "npm run certs"), else plain HTTP.
 require('dotenv').config();
+const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const path = require('path');
+const { createApp } = require('./app');
+const { createWhisper } = require('./whisper');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3001;
+const CERT_DIR = path.resolve(__dirname, '../../certs');
+const KEY_FILE = path.join(CERT_DIR, 'localhost-key.pem');
+const CERT_FILE = path.join(CERT_DIR, 'localhost.pem');
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '../client/build')));
+const whisper = createWhisper();
+const app = createApp({ whisper });
 
-// Teams app routes
-app.get('/config', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/config.html'));
-});
+const useHttps = fs.existsSync(KEY_FILE) && fs.existsSync(CERT_FILE);
+const server = useHttps
+  ? https.createServer({ key: fs.readFileSync(KEY_FILE), cert: fs.readFileSync(CERT_FILE) }, app)
+  : http.createServer(app);
 
-app.get('/tab', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/build/index.html'));
-});
-
-app.get('/demo', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/demo.html'));
-});
-
-// API routes for transcription
-app.post('/api/transcription/start', (req, res) => {
-  // TODO: Implement transcription start logic
-  res.json({ success: true, message: 'Transcription started' });
-});
-
-app.post('/api/transcription/stop', (req, res) => {
-  // TODO: Implement transcription stop logic
-  res.json({ success: true, message: 'Transcription stopped' });
-});
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
-
-// Catch all handler for React app
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/build/index.html'));
-});
-
-app.listen(PORT, () => {
-  console.log(`Teams Transcription App running on port ${PORT}`);
-  console.log(`Access the app at: http://localhost:${PORT}`);
+server.listen(PORT, () => {
+  const url = `${useHttps ? 'https' : 'http'}://localhost:${PORT}`;
+  console.log(`Meeting Transcription running at ${url}`);
+  if (!useHttps) {
+    console.log('No certificates in ./certs: serving HTTP. Teams needs HTTPS; run "npm run certs".');
+  }
+  console.log(`Loading Whisper model ${whisper.model} (first run downloads it)...`);
+  whisper.load().catch((err) => console.error('Failed to load Whisper model:', err.message));
 });

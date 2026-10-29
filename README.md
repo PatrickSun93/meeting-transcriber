@@ -1,116 +1,101 @@
-# Teams Meeting Transcription Plugin
+# Teams Meeting Transcription (local Whisper)
 
-A Microsoft Teams plugin that provides real-time speech-to-text transcription, speaker identification, and AI-powered meeting summaries.
+A Microsoft Teams app that transcribes what you say in a meeting. It runs as a meeting side panel or as a personal tab. Speech is turned into text on your own Mac by an OpenAI Whisper model, so audio never goes to a cloud service.
 
-## Features
+```
+Teams tab (your mic) --16 kHz audio chunks--> local server (https://localhost:3001) --> Whisper --> text
+```
 
-- 🎤 Real-time meeting transcription
-- 👥 Speaker identification
-- 🤖 AI-powered meeting summaries
-- 💬 Automatic transcript sharing to Teams chat
-- 🔒 Local and cloud STT options
-- ⚙️ Customizable summary prompts
+**What it does today:** it captures **your microphone only** and labels each line with your Teams name. Other participants are not transcribed. Teams does not let a tab app read the meeting's audio; that needs a bot built on the Graph media APIs.
 
-## Quick Start
+## Setup on a Mac
 
-### Prerequisites
+You need:
 
-- Node.js 18+ installed
-- Microsoft Teams account
-- Teams development environment set up
+- **Node.js 18 or newer:** `brew install node`
+- **mkcert**, to make a certificate Teams will trust: `brew install mkcert`
+- **A Teams account that may upload custom apps.** Work and school accounts need this allowed by the admin. The free Microsoft 365 Developer Program tenant allows it. The free personal Teams app does not.
 
-### Installation
+### 1. Install
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+```bash
+git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
+cd teams-meeting-plugin
+npm install
+cp .env.example .env
+```
 
-3. Copy environment variables:
-   ```bash
-   cp .env.example .env
-   ```
+### 2. Create the HTTPS certificate (once)
 
-4. Configure your API keys in `.env` file
+Teams only loads apps over HTTPS. This adds a local certificate authority to your keychain and asks for your Mac password once:
 
-5. Start the development server:
-   ```bash
-   npm run dev
-   ```
+```bash
+npm run certs
+```
 
-6. Build the client application:
-   ```bash
-   npm run build:dev
-   ```
+### 3. Build and start the server
 
-### Teams App Setup
+```bash
+npm run build
+npm start
+```
 
-1. Create app icons (see `assets/README.md`)
-2. Update `manifest.json` with your domain and app ID
-3. Package the app for Teams:
-   - Zip the `manifest.json` and `assets/` folder
-4. Sideload the app in Teams:
-   - Go to Teams → Apps → Upload a custom app
-   - Select your zip file
+The first start downloads the Whisper model (about 75 MB for `whisper-base.en`) into `./models`. Wait for `Whisper model ... ready`.
+
+To check it outside Teams, open https://localhost:3001 in Safari or Chrome, press **Start**, and talk. Text appears after each pause.
+
+The server prints about 100 `[W:onnxruntime ... Removing initializer ...]` lines when the model loads. They are harmless.
+
+### 4. Build the Teams app package
+
+```bash
+npm run package
+```
+
+This creates `dist/meeting-transcription.zip`.
+
+### 5. Upload it to Teams
+
+In Teams: **Apps → Manage your apps → Upload an app → Upload a custom app**, then pick `dist/meeting-transcription.zip`.
+
+### 6. Use it
+
+- **Personal tab:** open the app from the Apps list and use the **Transcription** tab.
+- **In a meeting:** in the meeting window, click **Apps (+)**, choose **Meeting Transcription**, and click **Save**. Open it from the toolbar as a side panel.
+
+Press **Start**. The first time, macOS asks to let Teams use the microphone. If you missed that prompt, allow it in **System Settings → Privacy & Security → Microphone → Microsoft Teams**, then restart Teams.
+
+Keep `npm start` running while you use the app. The tab talks to the server on your Mac.
+
+## Configuration (`.env`)
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `PORT` | `3001` | If you change it, rebuild the package with the matching URL. |
+| `WHISPER_MODEL` | `Xenova/whisper-base.en` | `whisper-tiny.en` is faster; `whisper-small.en` is more accurate but slower; `whisper-base` handles other languages. |
+| `APP_URL` | `https://localhost:3001` | The URL written into the Teams package. You can also pass `npm run package -- --url https://...`. |
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| The tab in Teams is blank or shows an error | Is `npm start` running? Does https://localhost:3001 open in Safari without a certificate warning? If not, run `npm run certs` again and restart the server. |
+| "Upload a custom app" is missing | Your organisation blocks custom apps. Use a Microsoft 365 developer tenant, or ask your admin to allow it. |
+| "Cannot reach the local server" | Start the server with `npm start`. |
+| Start stays greyed out | The model is still downloading or loading. Watch the server log. |
+| Microphone permission denied | See step 6. |
+| Odd words like "Thank you." in silence | These are known Whisper hallucinations. The server already filters the common ones. |
 
 ## Development
 
-### Project Structure
-
-```
-├── src/
-│   ├── client/          # React frontend
-│   ├── server/          # Express backend
-│   └── teams/           # Teams-specific integration
-├── assets/              # App icons and resources
-├── public/              # Static files
-├── manifest.json        # Teams app manifest
-└── package.json         # Dependencies and scripts
+```bash
+npm test         # Jest tests
+npm run lint     # ESLint
+npm run build    # bundle the client into src/client/build
 ```
 
-### Available Scripts
-
-- `npm start` - Start production server
-- `npm run dev` - Start development server with hot reload
-- `npm run build` - Build for production
-- `npm run build:dev` - Build for development
-- `npm test` - Run tests
-- `npm run lint` - Run ESLint
-- `npm run format` - Format code with Prettier
-
-## Configuration
-
-### STT Services
-
-The plugin supports multiple speech-to-text services:
-
-- **Local Whisper**: Privacy-focused, runs locally
-- **OpenAI Whisper**: High accuracy, cloud-based
-- **Azure Speech Services**: Enterprise-grade
-- **Claude**: AI-powered transcription (if available)
-
-### Environment Variables
-
-See `.env.example` for all available configuration options.
-
-## Next Steps
-
-This is the basic project structure. Next tasks will implement:
-
-1. Audio capture from Teams meetings
-2. STT service integrations
-3. Speaker identification
-4. AI summary generation
-5. Teams chat integration
-
-## Contributing
-
-1. Follow the implementation plan in `.kiro/specs/teams-meeting-transcription/tasks.md`
-2. Complete one task at a time
-3. Test thoroughly before moving to the next task
-4. Update documentation as needed
+The code layout is described in `.kiro/steering/structure.md`. The `browser-extension/` and `desktop-app/` folders hold earlier Google Meet and desktop work. They are not part of this demo.
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT
