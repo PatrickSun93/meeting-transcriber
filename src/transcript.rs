@@ -355,7 +355,12 @@ mod tests {
         let mut t = Transcript::default();
         // Mic fragment first, then Others' live preview reveals it as echo.
         t.add_final(0, line(Speaker::Me, 0.0, "And so, my fellow Americans,"));
-        t.set_preview(Speaker::Others, 0, 0.0, Some("And so my fellow Americans, ask not what".into()));
+        t.set_preview(
+            Speaker::Others,
+            0,
+            0.0,
+            Some("And so my fellow Americans, ask not what".into()),
+        );
         assert!(t.is_empty());
         // A later fragment is dropped straight away against the preview.
         assert!(!t.add_final(1, line(Speaker::Me, 2.0, "Ask not!")));
