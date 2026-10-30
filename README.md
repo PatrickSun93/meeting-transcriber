@@ -7,6 +7,7 @@ A native app, written in Rust, that writes down your meetings as they happen. It
 - **Works with any meeting app**: Teams, Zoom, Meet, FaceTime and others. Nothing is installed inside the meeting app.
 - **Any language**: speech is written in the language it was spoken. You can mix languages, and each line is detected on its own.
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
+- **Dictation** (Mac): hold Right Option anywhere and speak; let go and the text is pasted where the cursor is. It uses the same Whisper model as meetings, loaded once. See [Dictation](#dictation).
 
 Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the processor, or the graphics card with a Vulkan or CUDA build). It uses the `large-v3-turbo` model by default.
 
@@ -55,6 +56,11 @@ macOS asks for two permissions:
 - **Screen & System Audio Recording**: needed for *Others*. The app only uses the audio. Allow it in **System Settings → Privacy & Security → Screen & System Audio Recording**, then **quit and reopen** the app.
 
 If *Others* stays silent, this permission is almost always the reason. After you rebuild the app, macOS may treat it as a new app; switch the permission off and on again.
+
+Dictation needs two more, both in **System Settings → Privacy & Security**:
+
+- **Input Monitoring**: to see the hotkey from any app. Without it the app shows a banner with **Open System Settings** and **Try again**; everything else keeps working.
+- **Accessibility**: to press ⌘V for you. Without it the text is still copied to the clipboard.
 
 ## Windows and Linux
 
@@ -179,6 +185,24 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 **Headphones or speakers?** With headphones, your microphone only hears you. With speakers, it also hears the others. **Remove speaker echo** (on by default) drops your lines that repeat what Others said at the same moment. Short replies such as "Yes." are always kept. Headphones still give the cleanest result.
 
+## Dictation
+
+This replaces the old voice2cursor tool and works the same way:
+
+1. Hold **Right Option** (the hotkey can be changed) in any app. You hear *Tink*.
+2. Speak, then let go. The text is copied and pasted where the cursor is (*Pop*; *Basso* if something failed). Presses shorter than 0.35 s are ignored, and recording stops on its own after 5 minutes.
+3. While a meeting is recording, what you say during dictation stays out of the meeting: *Me* is silent while the key is held.
+
+Dictation is served before meeting audio by the same Whisper engine, so a meeting and dictation never load the model twice.
+
+- **Menu bar**: a microphone icon shows the state (hourglass loading, mic ready, red mic recording, waveform transcribing, crossed-out mic paused, triangle after an error). Its menu has the last 10 dictations (click one to copy it), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app in the menu bar, recording included; **Quit** (or ⌘Q) really quits.
+- **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name in `~/.voice2cursor/recordings`, voice2cursor's folder, so its earlier recordings are listed too.
+- **voice2cursor**: if it is still running (it listens for the same key), dictation starts paused and says so. Stop it with `/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh`, then press **Resume dictation**.
+- **Ollama** (off by default): a local model fixes punctuation and Chinese/English spacing, with voice2cursor's prompt. If Ollama fails or is slow, the text is pasted as Whisper wrote it.
+- **Open at login** (Settings): adds `~/Library/LaunchAgents/com.patricksun.meeting-transcriber.plist`, which opens `/Applications/Meeting Transcriber.app` in the menu bar when you log in. Switching it off removes the file.
+
+On Windows and Linux, dictation's hotkey, pasting, sounds, tray icon and login item are not there yet; the recordings folder is still listed.
+
 ## Settings
 
 Open **Settings** at the bottom of the sidebar. The app remembers your choices in `settings.txt` in `~/Library/Application Support/Meeting Transcriber` (Windows: `%LOCALAPPDATA%\Meeting Transcriber`, Linux: `~/.local/share/Meeting Transcriber`).
@@ -191,6 +215,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
+| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift, F13–F20, or **Press a key…** for any other), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
 
 ## Transcribe recordings
 
@@ -205,7 +230,7 @@ The same binary transcribes WAV files from the command line, with the same speak
 ## Development
 
 ```bash
-cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings, meeting files
+cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings, meeting files, dictation
 cargo clippy --all-targets
 cargo run --release
 ```
@@ -229,18 +254,21 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/audio/file.rs` | WAV files played in real time in place of a live source, for testing |
 | `src/audio/dsp.rs` | Low-pass filter and resampling to 16 kHz mono |
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
-| `src/session.rs` | Connects the sources, chunkers and transcriber |
-| `src/transcriber.rs` | Whisper engine and job queue (finals first; stale partials dropped) |
+| `src/session.rs` | Connects the sources, chunkers and transcriber; silences Me while dictating |
+| `src/transcriber.rs` | Whisper engine and job queue (dictation first, then finals; stale partials dropped) |
+| `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, Ollama clean-up, noticing voice2cursor |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
 | `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
 | `src/app/reader.rs` | Transcript reader: filter, find, copy |
 | `src/app/library.rs` | Open meeting: autosave, rename, delete, convert, export |
 | `src/app/settings_page.rs` | Models, folders, recognition options |
+| `src/app/dictation.rs` | Dictation in the window: hotkey, engine hand-over, menu bar item, closing to the menu bar |
+| `src/app/dictation_page.rs` | Dictation banners, history in the sidebar, the Dictation page and its Settings card |
 | `src/app/path_prompt.rs` | Typing a folder's path when there is no folder dialog |
-| `src/app/sidebar.rs` | New meeting, search, meeting list, Settings |
+| `src/app/sidebar.rs` | Meetings / Dictation, New meeting, search, the lists, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
-| `src/platform/` | What differs per system: file manager, folder dialog, wording, console (macOS, Windows, Linux) |
+| `src/platform/` | What differs per system: file manager, folder dialog, wording, console; for dictation the hotkey (Quartz event tap), ⌘V, sounds, menu bar item and login item (macOS; `unsupported.rs` elsewhere so far) |
 | `src/models.rs` | Model list, folders, download and moving |
 | `src/settings.rs` | Saved settings |
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |
