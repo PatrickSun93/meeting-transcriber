@@ -64,8 +64,9 @@ fn spawn(command: &mut Command) {
     }
 }
 
-/// The folder a dialog printed. Cancel exits with an error or prints nothing.
-#[cfg(any(not(target_os = "macos"), test))]
+/// The folder zenity or kdialog printed. Cancel exits with an error or
+/// prints nothing.
+#[cfg(any(not(any(target_os = "macos", windows)), all(test, unix)))]
 fn picked_path(out: std::process::Output) -> Picked {
     if !out.status.success() {
         return Picked::Cancelled;
@@ -100,24 +101,6 @@ fn choose_folder_script(prompt: &str, start: &Path) -> String {
 #[cfg(any(target_os = "macos", test))]
 fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
-/// PowerShell for the Windows Forms folder dialog. The path is written as
-/// UTF-8, so folders with any name come back intact.
-#[cfg(any(windows, test))]
-fn windows_picker_script(prompt: &str, start: &Path) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
-    let mut script = String::from(
-        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; \
-         Add-Type -AssemblyName System.Windows.Forms; \
-         $d = New-Object System.Windows.Forms.FolderBrowserDialog; ",
-    );
-    script += &format!("$d.Description = {}; ", quote(prompt));
-    if start.is_dir() {
-        script += &format!("$d.SelectedPath = {}; ", quote(&start.to_string_lossy()));
-    }
-    script += "if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.SelectedPath) }";
-    script
 }
 
 /// The path with `\` for every `/`. Windows accepts both, but Explorer
@@ -157,15 +140,6 @@ mod tests {
         );
         let start = std::env::temp_dir();
         assert!(choose_folder_script("x", &start).contains(" default location (POSIX file \""));
-    }
-
-    #[test]
-    fn windows_picker_script_quotes_text() {
-        let script = windows_picker_script("Pick Patrick's folder", Path::new("/no/such/folder"));
-        assert!(script.contains("$d.Description = 'Pick Patrick''s folder'; "));
-        assert!(!script.contains("$d.SelectedPath = "));
-        let start = std::env::temp_dir();
-        assert!(windows_picker_script("x", &start).contains("$d.SelectedPath = '"));
     }
 
     #[test]

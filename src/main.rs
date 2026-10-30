@@ -27,9 +27,14 @@ Meeting Transcriber
 ";
 
 fn main() -> Result<()> {
-    #[cfg(windows)]
-    meeting_transcriber::platform::attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Only the command line: a window attached to the terminal it was
+    // started from would be killed, unsaved notes and all, when that
+    // terminal is closed or gets Ctrl+C.
+    #[cfg(windows)]
+    if !args.is_empty() {
+        meeting_transcriber::platform::attach_console();
+    }
     match args.first().map(String::as_str) {
         None => run_app(),
         Some("transcribe") => run_transcribe(&args[1..]),

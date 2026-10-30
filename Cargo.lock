@@ -2076,6 +2076,7 @@ dependencies = [
  "screencapturekit",
  "ureq",
  "whisper-rs",
+ "windows",
 ]
 
 [[package]]
