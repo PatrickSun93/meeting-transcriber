@@ -94,6 +94,7 @@ impl App {
             return;
         }
         let edit = egui::TextEdit::singleline(&mut self.open.meeting.title)
+            .id(self.open.view_id.with("title"))
             .font(FontId::proportional(18.0))
             .hint_text("Meeting title")
             .frame(Frame::NONE)
@@ -123,6 +124,7 @@ impl App {
         }
         ui.weak("Tags");
         let edit = egui::TextEdit::singleline(&mut self.open.tags_text)
+            .id(self.open.view_id.with("tags"))
             .hint_text("team, client")
             .desired_width(200.0);
         if ui.add(edit).on_hover_text("Separate tags with commas").changed() {
@@ -246,12 +248,13 @@ impl App {
             return;
         }
         let height = ui.available_height();
+        let view_id = self.open.view_id;
         egui::ScrollArea::vertical()
-            .id_salt(("notes", self.open.path.clone()))
+            .id_salt(view_id.with("notes scroll"))
             .auto_shrink(false)
             .show(ui, |ui| {
                 let edit = egui::TextEdit::multiline(&mut self.open.meeting.notes)
-                    .id_salt("meeting_notes")
+                    .id(view_id.with("notes"))
                     .hint_text("Type notes here, also while recording.\nThey are saved with the transcript.")
                     .frame(Frame::NONE)
                     .margin(Margin::ZERO)

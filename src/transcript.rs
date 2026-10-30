@@ -151,6 +151,10 @@ pub struct Transcript {
     pub echo: EchoFilter,
     /// Number of Me lines removed as echo, shown in the UI.
     pub echo_removed: usize,
+    /// Bumped on every change to `lines`. Echo removal can take a line out
+    /// and a new one can come in within one frame, so the count alone does
+    /// not show that the lines changed.
+    revision: u64,
 }
 
 impl Transcript {
@@ -166,7 +170,13 @@ impl Transcript {
         self.lines.is_empty()
     }
 
+    /// Changes whenever the lines change, for caches derived from them.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn clear(&mut self) {
+        self.revision += 1;
         self.lines.clear();
         self.previews = [None, None];
         self.finished = [None, None];
@@ -189,6 +199,7 @@ impl Transcript {
         if speaker == Speaker::Others
             && let Some(others) = self.others_in_progress()
         {
+            self.revision += 1;
             let before = self.lines.len();
             let echo = &self.echo;
             self.lines.retain(|me| !echo.is_echo(me, &others));
@@ -221,6 +232,7 @@ impl Transcript {
     /// Adds a finished line in time order. Returns false if it was dropped as echo.
     pub fn add_final(&mut self, utterance: u64, line: Line) -> bool {
         self.end_utterance(line.speaker, utterance);
+        self.revision += 1;
 
         match line.speaker {
             Speaker::Me => {
@@ -436,5 +448,20 @@ mod tests {
         let texts: Vec<_> = t.lines().iter().map(|l| l.text.as_str()).collect();
         assert_eq!(texts, ["a", "b"]);
         assert!(t.preview(Speaker::Others).is_none());
+    }
+
+    #[test]
+    fn revision_changes_when_lines_are_swapped() {
+        let mut t = Transcript::default();
+        t.add_final(0, line(Speaker::Me, 1.0, "let's look at the numbers"));
+        let before = t.revision();
+        // The Me line goes as echo and an Others line takes its place: same
+        // count, different lines.
+        t.add_final(0, line(Speaker::Others, 1.0, "Let's look at the numbers."));
+        assert_eq!(t.lines().len(), 1);
+        assert_ne!(t.revision(), before);
+        let before = t.revision();
+        t.set_lines(vec![line(Speaker::Me, 2.0, "other")]);
+        assert_ne!(t.revision(), before);
     }
 }

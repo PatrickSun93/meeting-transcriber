@@ -4,10 +4,12 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context as _;
 use crossbeam_channel::Receiver;
+use eframe::egui;
 
 use super::{App, Page, platform};
 use crate::meeting::{self, Meeting};
@@ -30,6 +32,11 @@ pub(super) struct OpenMeeting {
     /// None until the first save.
     pub path: Option<PathBuf>,
     pub kind: Kind,
+    /// Base id for the meeting's widgets (title, notes, scroll positions).
+    /// Fixed while the meeting is open, so the first save or a rename does
+    /// not take focus from the field being typed in, and unique per meeting,
+    /// so undo in one meeting's notes never brings back another's text.
+    pub view_id: egui::Id,
     /// The title the file is named after; changing the title renames it.
     saved_title: String,
     /// The tags field as typed.
@@ -48,12 +55,18 @@ pub(super) struct OpenMeeting {
 
 impl OpenMeeting {
     pub fn unsaved() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let meeting = Meeting::new(DEFAULT_TITLE, chrono::Local::now().naive_local());
-        Self::from_meeting(meeting, None, Kind::Markdown, None)
+        let mut open = Self::from_meeting(meeting, None, Kind::Markdown, None);
+        open.view_id = egui::Id::unique(("new meeting", NEXT.fetch_add(1, Ordering::Relaxed)));
+        open
     }
 
     fn from_meeting(meeting: Meeting, path: Option<PathBuf>, kind: Kind, disk_modified: Option<SystemTime>) -> Self {
+        // By path, so a reopened meeting gets its scroll position back.
+        let view_id = egui::Id::unique(("meeting", &path));
         Self {
+            view_id,
             saved_title: meeting.title.clone(),
             tags_text: meeting.tags.join(", "),
             meeting,
@@ -149,6 +162,8 @@ impl App {
         self.open.edited = true;
         self.open.changed_at = Some(Instant::now());
         self.open.unsaved_since.get_or_insert_with(Instant::now);
+        // The frame that saves; nothing else may come along to draw it.
+        self.ctx.request_repaint_after(AUTOSAVE_DELAY);
     }
 
     /// Transcript lines were added. Saved a moment after the first one, so
@@ -157,6 +172,7 @@ impl App {
         self.open.new_lines = true;
         self.open.changed_at.get_or_insert_with(Instant::now);
         self.open.unsaved_since.get_or_insert_with(Instant::now);
+        self.ctx.request_repaint_after(AUTOSAVE_DELAY);
     }
 
     /// Saves once changes have been quiet for a moment.
@@ -184,34 +200,43 @@ impl App {
             || m.title != DEFAULT_TITLE
     }
 
-    /// Writes the open meeting now if it has unsaved changes.
-    pub(super) fn save_open(&mut self) {
-        if !self.open.unsaved_changes() {
-            return;
-        }
-        self.write_open(false);
+    /// Writes the open meeting now if it has unsaved changes. False if it
+    /// could not be written, so callers keep it open rather than drop the
+    /// user's notes.
+    pub(super) fn save_open(&mut self) -> bool {
+        !self.open.unsaved_changes() || self.write_open(false)
     }
 
     /// Writes the open meeting, creating its file even when it is empty
     /// (recording needs a file for lines that finish late).
-    pub(super) fn save_open_creating(&mut self) {
-        self.write_open(true);
+    pub(super) fn save_open_creating(&mut self) -> bool {
+        self.write_open(true)
     }
 
-    fn write_open(&mut self, create: bool) {
+    fn write_open(&mut self, create: bool) -> bool {
         self.open.changed_at = None;
         self.open.unsaved_since = None;
         if self.open.read_only() || (self.open.path.is_none() && !create && !self.worth_a_file()) {
             self.open.edited = false;
             self.open.new_lines = false;
-            return;
+            return true;
         }
         match self.try_write_open() {
             Ok(()) => {
                 self.open.edited = false;
                 self.open.new_lines = false;
+                true
             }
-            Err(e) => self.report(format!("Could not save the meeting: {e:#}")),
+            Err(e) => {
+                self.report(format!(
+                    "Could not save the meeting, so it stays open (Copy all keeps a copy of your notes): {e:#}"
+                ));
+                // Try again shortly: the folder may come back (a disk
+                // plugged in again, say).
+                self.open.changed_at = Some(Instant::now());
+                self.open.unsaved_since = Some(Instant::now());
+                false
+            }
         }
     }
 
@@ -293,10 +318,9 @@ impl App {
 
     /// Starts an empty meeting. Its file is made once it has content.
     pub(super) fn new_meeting(&mut self) {
-        if self.recording() {
+        if self.recording() || !self.save_open() {
             return;
         }
-        self.save_open();
         self.show(OpenMeeting::unsaved(), Vec::new());
     }
 
@@ -306,10 +330,9 @@ impl App {
             self.page = Page::Meeting;
             return;
         }
-        if self.recording() {
+        if self.recording() || !self.save_open() {
             return;
         }
-        self.save_open();
         match load(path, kind) {
             Ok((open, lines)) => self.show(open, lines),
             Err(e) => self.report(format!("{e:#}")),
@@ -480,8 +503,10 @@ impl App {
         // Lines recorded here and not saved yet are newer than the file's.
         let keep_lines = self.open.new_lines || self.recording();
         let open = &self.open;
-        let (new_lines, changed_at, unsaved_since) = (open.new_lines, open.changed_at, open.unsaved_since);
+        let (view_id, new_lines, changed_at, unsaved_since) =
+            (open.view_id, open.new_lines, open.changed_at, open.unsaved_since);
         self.open = OpenMeeting {
+            view_id,
             new_lines,
             changed_at,
             unsaved_since,
@@ -489,7 +514,6 @@ impl App {
         };
         if !keep_lines {
             self.transcript.set_lines(lines);
-            self.reader.lines_replaced();
         }
     }
 
@@ -582,8 +606,11 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".{}.saving", file_name(path)));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+    let result = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {

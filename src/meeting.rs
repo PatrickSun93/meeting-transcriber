@@ -111,7 +111,8 @@ impl Meeting {
     /// Reads a meeting file. Never fails: missing parts get defaults, the
     /// title falls back to `fallback_title` and the date to `fallback_date`.
     pub fn parse(text: &str, fallback_title: &str, fallback_date: NaiveDateTime) -> Self {
-        let text = text.replace("\r\n", "\n");
+        // Windows editors may start the file with a byte-order mark.
+        let text = text.trim_start_matches('\u{feff}').replace("\r\n", "\n");
         let (front, body) = split_frontmatter(&text);
         let mut meeting = Self::new(fallback_title, fallback_date);
         let mut front_title = None;
@@ -133,10 +134,24 @@ impl Meeting {
             Some(i) => (&body_lines[..i], &body_lines[i + 1..]),
             None => (&body_lines[..], &[][..]),
         };
-        let (heading, notes) = split_notes(before);
+        let (heading, mut notes) = split_notes(before);
         meeting.title = front_title.or(heading).unwrap_or_else(|| fallback_title.to_string());
+        // Text typed between the heading and the first line has no line to
+        // join; it moves up to the notes rather than being lost on save.
+        let first_line = transcript
+            .iter()
+            .position(|l| parse_transcript_line(l).is_some())
+            .unwrap_or(transcript.len());
+        let stray = transcript[..first_line].join("\n");
+        let stray = stray.trim_matches('\n');
+        if !stray.trim().is_empty() {
+            if !notes.is_empty() {
+                notes.push_str("\n\n");
+            }
+            notes.push_str(stray);
+        }
         meeting.notes = notes;
-        meeting.lines = parse_lines(transcript.iter().copied());
+        meeting.lines = parse_lines(transcript[first_line..].iter().copied());
         // Files edited elsewhere may lack a duration; the last line still
         // bounds it, which matters when recording continues.
         if let Some(last) = meeting.lines.last() {
@@ -383,7 +398,10 @@ pub fn parse_date(s: &str) -> Option<NaiveDateTime> {
 pub fn read_header(reader: impl BufRead) -> Header {
     const MAX_LINES: usize = 500;
     let mut lines = reader.lines().map_while(Result::ok).take(MAX_LINES);
-    if lines.next().is_none_or(|first| first.trim_end() != "---") {
+    if lines
+        .next()
+        .is_none_or(|first| first.trim_start_matches('\u{feff}').trim_end() != "---")
+    {
         return Header::default();
     }
     let mut front = String::new();
@@ -647,6 +665,28 @@ mod tests {
         let saved = m.to_markdown();
         assert!(saved.contains("tags: [team, client]\naliases:\n  - plan\nstatus: done\n---\n"));
         assert_eq!(parse(&saved), m);
+    }
+
+    #[test]
+    fn text_above_the_first_line_is_kept() {
+        let text =
+            "---\ntitle: x\n---\n# x\n\n## Notes\n\nmine\n\n## Transcript\n\nTyped by hand.\n\n**[00:01] Me:** a\n";
+        let m = parse(text);
+        assert_eq!(m.notes, "mine\n\nTyped by hand.");
+        assert_eq!(m.lines.len(), 1);
+        assert_eq!(m.lines[0].text, "a");
+        // Saved and read again, nothing moves further.
+        assert_eq!(parse(&m.to_markdown()), m);
+        // No notes: the stray text becomes the notes.
+        let m = parse("## Transcript\nonly text\n");
+        assert_eq!((m.notes.as_str(), m.lines.len()), ("only text", 0));
+    }
+
+    #[test]
+    fn byte_order_mark_is_ignored() {
+        let md = format!("\u{feff}{}", sample().to_markdown());
+        assert_eq!(parse(&md), sample());
+        assert_eq!(read_header(md.as_bytes()).title, sample().title.into());
     }
 
     #[test]

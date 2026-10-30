@@ -9,7 +9,7 @@ use eframe::egui::{
     text::LayoutJob,
 };
 
-use super::{App, theme};
+use super::{App, platform, theme};
 use crate::meeting::find_matches;
 use crate::transcript::{Line, Speaker, format_time};
 
@@ -35,10 +35,8 @@ pub(super) struct Reader {
     scroll_to_current: bool,
     pub notes_open: bool,
     matches: Vec<Match>,
-    /// What `matches` was computed for: query, filter, line count, version.
-    matches_for: Option<(String, Option<Speaker>, usize, u64)>,
-    /// Bumped when the lines are replaced, so matches are found again.
-    version: u64,
+    /// What `matches` was computed for: query, filter, transcript revision.
+    matches_for: Option<(String, Option<Speaker>, u64)>,
 }
 
 impl Default for Reader {
@@ -51,7 +49,6 @@ impl Default for Reader {
             notes_open: true,
             matches: Vec::new(),
             matches_for: None,
-            version: 0,
         }
     }
 }
@@ -63,15 +60,10 @@ impl Reader {
         self.filter = None;
         self.current = 0;
         self.scroll_to_current = !self.find.is_empty();
-        self.lines_replaced();
     }
 
-    pub fn lines_replaced(&mut self) {
-        self.version += 1;
-    }
-
-    fn update_matches(&mut self, lines: &[Line]) {
-        let key = (self.find.clone(), self.filter, lines.len(), self.version);
+    fn update_matches(&mut self, lines: &[Line], revision: u64) {
+        let key = (self.find.clone(), self.filter, revision);
         if self.matches_for.as_ref() == Some(&key) {
             return;
         }
@@ -118,12 +110,13 @@ fn line_text(line: &Line) -> String {
 
 impl App {
     pub(super) fn transcript_view(&mut self, ui: &mut Ui) {
-        self.reader.update_matches(self.transcript.lines());
+        self.reader
+            .update_matches(self.transcript.lines(), self.transcript.revision());
         self.reader_toolbar(ui);
         ui.add_space(4.0);
         ui.separator();
         // An id per meeting, so each keeps its own scroll position.
-        let id = ("reader", self.open.path.clone());
+        let id = self.open.view_id.with("reader");
         let live = self.recording();
         egui::ScrollArea::vertical()
             .id_salt(id)
@@ -178,7 +171,7 @@ impl App {
         let focus = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F));
         let edit = egui::TextEdit::singleline(&mut self.reader.find)
             .id_salt("find_in_transcript")
-            .hint_text("Find in transcript  ⌘F")
+            .hint_text(format!("Find in transcript  {}", platform::FIND_SHORTCUT))
             .desired_width(170.0);
         let response = ui.add(edit);
         if focus {
@@ -299,12 +292,17 @@ fn highlighted(ui: &Ui, text: &str, hits: &[Match], current: Option<&Range<usize
     let mut job = LayoutJob::default();
     let mut at = 0;
     for m in hits {
-        job.append(&text[at..m.range.start], 0.0, normal.clone());
+        // Ranges come from this text; checked anyway, since slicing at a
+        // bad offset would panic the whole window.
+        let (Some(before), Some(found)) = (text.get(at..m.range.start), text.get(m.range.clone())) else {
+            continue;
+        };
+        job.append(before, 0.0, normal.clone());
         let format = if current == Some(&m.range) { &strong } else { &hit };
-        job.append(&text[m.range.clone()], 0.0, format.clone());
+        job.append(found, 0.0, format.clone());
         at = m.range.end;
     }
-    job.append(&text[at..], 0.0, normal);
+    job.append(text.get(at..).unwrap_or_default(), 0.0, normal);
     job
 }
 
