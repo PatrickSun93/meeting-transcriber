@@ -16,8 +16,13 @@ const USAGE: &str = "\
 Meeting Transcriber
 
   meeting-transcriber [--hidden]
-      Opens the app window. --hidden (used at login on the Mac) starts in
-      the menu bar with the window closed.
+      Opens the app window. --hidden (used at login) starts in the menu
+      bar or tray with the window closed.
+
+  meeting-transcriber dictate start|stop|toggle      (Linux)
+      Starts or stops dictation in the running app, as holding and
+      letting go of the hotkey does. Bind `dictate toggle` to a shortcut
+      in your desktop's keyboard settings (on Wayland, or for any key).
 
   meeting-transcriber transcribe [--me FILE.wav] [--others FILE.wav]
                                  [--model PATH_OR_ID] [--language CODE]
@@ -40,6 +45,7 @@ fn main() -> Result<()> {
         None => run_app(false),
         Some("--hidden") => run_app(true),
         Some("transcribe") => run_transcribe(&args[1..]),
+        Some("dictate") => run_dictate(&args[1..]),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             Ok(())
@@ -64,6 +70,23 @@ fn run_app(hidden: bool) -> Result<()> {
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, hidden)))),
     )
     .map_err(|e| anyhow::anyhow!("could not open the window: {e}"))
+}
+
+/// Tells the running app to start or stop dictating.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn run_dictate(args: &[String]) -> Result<()> {
+    let [command] = args else {
+        bail!("dictate takes one of start, stop or toggle\n\n{USAGE}");
+    };
+    let answer = meeting_transcriber::platform::send_dictate_command(command)?;
+    eprintln!("Dictation {answer}");
+    Ok(())
+}
+
+/// The hotkey itself works everywhere else; the command is for Linux.
+#[cfg(any(target_os = "macos", windows))]
+fn run_dictate(_args: &[String]) -> Result<()> {
+    bail!("`dictate` is for Linux; here, hold the dictation hotkey instead")
 }
 
 fn run_transcribe(args: &[String]) -> Result<()> {

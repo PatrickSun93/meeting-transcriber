@@ -1,10 +1,27 @@
 //! Linux and the BSDs: the desktop's file manager (over D-Bus, else
-//! xdg-open) and zenity or kdialog for the folder dialog.
+//! xdg-open) and zenity or kdialog for the folder dialog; for dictation, the
+//! hotkey (`hotkey.rs`, with `socket.rs` for `meeting-transcriber
+//! dictate`), the tray icon (`tray.rs`) and the rest of what it needs from
+//! the system (`system.rs`).
 
 use std::path::Path;
 use std::process::Command;
 
 use super::{Picked, file_uri, picked_path, spawn};
+
+mod hotkey;
+mod socket;
+mod system;
+mod tray;
+
+pub(super) use hotkey::start_hotkey;
+pub use hotkey::{HOTKEY_HINT, hotkey_held};
+pub use socket::send_dictate_command;
+pub use system::{
+    AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, paste_note,
+    play_sound, set_open_at_login, show_app,
+};
+pub use tray::Tray;
 
 pub const SHOW_IN_FILES: &str = "Show in folder";
 pub const THIS_COMPUTER: &str = "this computer";

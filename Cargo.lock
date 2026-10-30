@@ -2083,6 +2083,8 @@ dependencies = [
  "ureq",
  "whisper-rs",
  "windows",
+ "x11rb",
+ "zbus",
 ]
 
 [[package]]

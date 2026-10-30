@@ -1,10 +1,24 @@
-//! Windows: Explorer, its folder dialog, and the console.
+//! Windows: Explorer, its folder dialog, and the console; for dictation, the
+//! hotkey (`hotkey.rs`), the tray icon (`tray.rs`) and the rest of what it
+//! needs from the system (`system.rs`).
 
 use std::os::windows::process::CommandExt as _;
 use std::path::Path;
 use std::process::Command;
 
 use super::{Picked, backslashed, spawn};
+
+mod hotkey;
+mod system;
+mod tray;
+
+pub(super) use hotkey::start_hotkey;
+pub use hotkey::{HOTKEY_HINT, hotkey_held};
+pub use system::{
+    AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, play_sound,
+    set_open_at_login, show_app,
+};
+pub use tray::Tray;
 
 pub const SHOW_IN_FILES: &str = "Show in Explorer";
 pub const THIS_COMPUTER: &str = "this PC";

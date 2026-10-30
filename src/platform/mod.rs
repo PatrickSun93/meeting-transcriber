@@ -1,13 +1,11 @@
 //! Everything that differs between macOS, Windows and Linux, behind one small
 //! API: the file manager, the folder picker, the words the window uses for
 //! this computer, and what dictation needs from the system (the global
-//! hotkey, pasting, sounds, the menu bar item, opening at login). Each system
-//! has its own file (`macos/`, `windows.rs`, `linux.rs`, which also serves
-//! the BSDs); the script builders are here so their tests run on every
+//! hotkey, pasting, sounds, the menu bar or tray item, opening at login).
+//! Each system has its own folder (`macos/`, `windows/`, `linux/`, which
+//! also serves the BSDs); the script builders are here, and the Windows and
+//! Linux backends' plain logic in `shared.rs`, so their tests run on every
 //! system.
-//!
-//! Dictation's system parts exist for macOS so far. On Windows and Linux
-//! they are in `unsupported.rs` and say so, until their backends are added.
 //!
 //! Audio capture has its own per-system code in `audio::system`.
 
@@ -25,8 +23,8 @@ use crate::dictation::hotkey::Hotkey;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(not(target_os = "macos"))]
-mod unsupported;
+#[cfg(any(not(target_os = "macos"), test))]
+mod shared;
 #[cfg(windows)]
 mod windows;
 
@@ -37,23 +35,47 @@ use macos as imp;
 #[cfg(windows)]
 use windows as imp;
 
-/// Dictation's system parts.
-#[cfg(target_os = "macos")]
-use macos as dictation_imp;
-#[cfg(not(target_os = "macos"))]
-use unsupported as dictation_imp;
-
 #[cfg(windows)]
 pub use imp::attach_console;
+#[cfg(not(any(target_os = "macos", windows)))]
+pub use imp::send_dictate_command;
 pub use imp::{
-    MIC_ACCESS_HINT, NO_DIALOG_HINT, NO_MIC_HINT, SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, open_file, open_folder,
-    reveal,
+    AUTOSTART, DICTATION, HAS_TRAY, HOTKEY_HINT, MIC_ACCESS_HINT, NO_DIALOG_HINT, NO_MIC_HINT, PASTE_SHORTCUT,
+    SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, Tray, hide_app, hotkey_held, open_at_login, open_file, open_folder,
+    open_hotkey_settings, paste, play_sound, reveal, set_open_at_login, show_app,
 };
 
-pub use dictation_imp::{
-    AUTOSTART, DICTATION, HAS_TRAY, HOTKEY_HINT, PASTE_SHORTCUT, Tray, hide_app, hotkey_held, open_at_login,
-    open_hotkey_settings, paste, play_sound, set_open_at_login, show_app,
+/// The button on the hotkey banner that opens the system's settings for
+/// it, where there is such a page.
+pub const HOTKEY_SETTINGS: Option<&str> = if cfg!(target_os = "macos") {
+    Some("Open System Settings")
+} else {
+    None
 };
+
+/// Under "Open at login": where the app is when it starts that way.
+pub const AUTOSTART_HINT: &str = if cfg!(target_os = "macos") {
+    "Starts in the menu bar when you log in, from Applications."
+} else if cfg!(windows) {
+    "Starts in the notification area when you log in, from where it is now."
+} else {
+    "Starts when you log in, from where it is now; in the tray if the desktop has one."
+};
+
+/// Under the hotkey, when the system decides what starts dictation (see
+/// `HotkeyWatch::system_key`): only on Linux.
+pub const SYSTEM_KEY_NOTE: &str = "The desktop decides the dictation shortcut (on Wayland, apps may not watch \
+     the keyboard): change it in its keyboard or shortcut settings. Any shortcut there can also run \
+     `meeting-transcriber dictate toggle`.";
+
+/// Something to know about pasting here, shown under "Paste automatically"
+/// (on Wayland, which tool presses Ctrl+V, or that none is installed).
+pub fn paste_note() -> Option<String> {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return imp::paste_note();
+    #[cfg(any(target_os = "macos", windows))]
+    None
+}
 
 /// What the hotkey watcher reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +98,21 @@ pub enum KeyEvent {
 pub struct HotkeyWatch {
     key: Arc<Mutex<Hotkey>>,
     capture: Arc<AtomicBool>,
+    system_key: Arc<Mutex<Option<String>>>,
 }
 
 impl HotkeyWatch {
+    /// Set when the system, not the app, decides what starts dictation (on
+    /// Wayland, the desktop's shortcut settings): what to call it. The
+    /// hotkey setting does not apply then.
+    pub fn system_key(&self) -> Option<String> {
+        self.system_key.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_system_key(&self, label: Option<String>) {
+        *self.system_key.lock().unwrap_or_else(|e| e.into_inner()) = label;
+    }
+
     pub fn key(&self) -> Hotkey {
         *self.key.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -104,11 +138,12 @@ impl HotkeyWatch {
 pub fn watch_hotkey(key: Hotkey, on_event: impl Fn(KeyEvent) + Send + 'static) -> Result<HotkeyWatch> {
     let watch = HotkeyWatch::default();
     watch.set_key(key);
-    dictation_imp::start_hotkey(watch.clone(), Box::new(on_event))?;
+    imp::start_hotkey(watch.clone(), Box::new(on_event))?;
     Ok(watch)
 }
 
-/// Dictation's sounds: voice2cursor's Tink, Pop and Basso on the Mac.
+/// Dictation's sounds: voice2cursor's Tink, Pop and Basso on the Mac, system
+/// sounds elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sound {
     Start,
@@ -116,7 +151,7 @@ pub enum Sound {
     Error,
 }
 
-/// The menu bar item's state, shown by its icon.
+/// The menu bar (or tray) item's state, shown by its icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayIcon {
     Loading,
@@ -127,7 +162,8 @@ pub enum TrayIcon {
     Error,
 }
 
-/// What the menu bar item's menu shows; it is rebuilt from this when opened.
+/// What the menu bar (or tray) item's menu shows; it is rebuilt from this
+/// when opened.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TrayMenu {
     pub status: String,
@@ -136,7 +172,7 @@ pub struct TrayMenu {
     pub paused: bool,
 }
 
-/// What was chosen in the menu bar item's menu.
+/// What was chosen in the menu bar (or tray) item's menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     Copy(String),
@@ -322,6 +358,9 @@ mod tests {
         watch.capture_next(true);
         assert_eq!(thread_side.key(), Hotkey::F(13));
         assert!(thread_side.capturing());
+        assert_eq!(watch.system_key(), None);
+        thread_side.set_system_key(Some("Ctrl+Alt+D".into()));
+        assert_eq!(watch.system_key().as_deref(), Some("Ctrl+Alt+D"));
     }
 
     #[test]

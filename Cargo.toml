@@ -55,9 +55,28 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
-# The Explorer folder dialog (COM). Already built for cpal's WASAPI backend.
+# The Explorer folder dialog (COM); for dictation, the keyboard hook and
+# Ctrl+V, the tray icon, sounds and the startup entry. Already built for
+# cpal's WASAPI backend.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Dictation on Linux: the hotkey and Ctrl+V on X11 (XInput 2, XTest), and
+# over D-Bus the Wayland shortcuts portal and the tray icon. Both already
+# built for arboard and AccessKit.
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+zbus = "5"
 
 [profile.release]
 lto = "thin"

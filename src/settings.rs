@@ -39,7 +39,7 @@ pub struct DictationSettings {
     pub auto_paste: bool,
     pub sounds: bool,
     pub save_recordings: bool,
-    /// Empty for the default (`~/.voice2cursor/recordings`); may start with `~/`.
+    /// Empty for the default (`archive::default_dir`); may start with `~/`.
     pub recordings_dir: String,
     pub min_seconds: f32,
     pub max_seconds: f32,
@@ -316,12 +316,12 @@ mod tests {
         assert_eq!(old.models_move_from_path(), None);
         // …and before dictation: voice2cursor's defaults.
         assert_eq!(old.dictation, DictationSettings::default());
-        assert_eq!(old.dictation.hotkey(), Hotkey::RightAlt);
+        assert_eq!(old.dictation.hotkey(), Hotkey::default());
         let cfg = old.dictation.config();
         assert_eq!((cfg.min_seconds, cfg.max_seconds), (0.35, 300.0));
         assert!(cfg.enabled && cfg.auto_paste && cfg.sounds && cfg.save_recordings);
         assert_eq!(cfg.ollama, None);
-        assert!(cfg.recordings_dir.ends_with(".voice2cursor/recordings"));
+        assert_eq!(cfg.recordings_dir, crate::dictation::archive::default_dir());
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod tests {
         assert!(s.dictation.config().ollama.is_some());
         assert_eq!(
             Settings::parse("dictation_hotkey=nonsense").dictation.hotkey(),
-            Hotkey::RightAlt
+            Hotkey::default()
         );
         let mut multi = Settings::default();
         multi.dictation.initial_prompt = "first line\nsecond=line\r\n".into();

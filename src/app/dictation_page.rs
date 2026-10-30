@@ -10,6 +10,7 @@ use crate::dictation::archive::Clip;
 use crate::dictation::hotkey::{self, Hotkey};
 use crate::dictation::{Phase, voice2cursor};
 use crate::meetings;
+use crate::platform::HotkeyWatch;
 
 /// How many more clips "Show more" lists.
 pub(super) const LIST_STEP: usize = 200;
@@ -86,7 +87,9 @@ impl App {
             let mut dismiss = false;
             banner(ui, warn, &why, |ui| {
                 retry = ui.small_button("Try again").clicked();
-                if ui.small_button("Open System Settings").clicked() {
+                if let Some(label) = platform::HOTKEY_SETTINGS
+                    && ui.small_button(label).clicked()
+                {
                     platform::open_hotkey_settings();
                 }
                 dismiss = ui.small_button("Dismiss").clicked();
@@ -152,7 +155,7 @@ impl App {
 
     pub(super) fn dictation_page(&mut self, ui: &mut Ui) {
         let status = self.dict.status();
-        let key = self.dict.settings.hotkey().label();
+        let key = self.hotkey_label();
         let (phase, headline) = self.dictation_state(&status);
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -295,6 +298,11 @@ impl App {
                 format!("Paste automatically ({})", platform::PASTE_SHORTCUT),
             );
             ui.weak("Off: the text is only copied to the clipboard.");
+            if self.dict.settings.auto_paste
+                && let Some(note) = platform::paste_note()
+            {
+                ui.weak(note);
+            }
             ui.checkbox(&mut self.dict.settings.sounds, "Sounds (start, done, error)");
             ui.horizontal(|ui| {
                 ui.label("Ignore clips shorter than");
@@ -348,11 +356,19 @@ impl App {
                     Err(e) => self.errors.push(format!("{e:#}")),
                 }
             }
-            ui.weak("Starts in the menu bar when you log in, from Applications.");
+            ui.weak(platform::AUTOSTART_HINT);
         }
     }
 
     fn hotkey_row(&mut self, ui: &mut Ui) {
+        if let Some(label) = self.dict.hotkey.as_ref().and_then(HotkeyWatch::system_key) {
+            ui.horizontal(|ui| {
+                ui.label("Hotkey");
+                ui.label(RichText::new(label).strong());
+            });
+            ui.weak(platform::SYSTEM_KEY_NOTE);
+            return;
+        }
         let current = self.dict.settings.hotkey();
         ui.horizontal(|ui| {
             ui.label("Hotkey");

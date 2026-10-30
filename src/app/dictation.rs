@@ -1,6 +1,6 @@
 //! Dictation in the window: starting the hotkey watcher, handing the
-//! dictation threads the shared engine and the settings, the menu bar item,
-//! closing to the menu bar, and the recordings list for the sidebar.
+//! dictation threads the shared engine and the settings, the menu bar (or
+//! tray) item, closing to it, and the recordings list for the sidebar.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -409,7 +409,17 @@ impl App {
         if self.dict.hotkey.is_none() && matches!(phase, Phase::Ready | Phase::Loading | Phase::Error) {
             return (Phase::Error, "The hotkey can't be watched; see the window".into());
         }
-        (phase, describe(status, &self.dict.settings.hotkey().label()))
+        (phase, describe(status, &self.hotkey_label()))
+    }
+
+    /// What starts dictation, as the window calls it: the hotkey setting,
+    /// or what the system decided (on Wayland, the desktop's shortcut).
+    pub(super) fn hotkey_label(&self) -> String {
+        self.dict
+            .hotkey
+            .as_ref()
+            .and_then(HotkeyWatch::system_key)
+            .unwrap_or_else(|| self.dict.settings.hotkey().label())
     }
 
     fn update_tray(&mut self) {
