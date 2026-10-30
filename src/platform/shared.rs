@@ -384,8 +384,6 @@ pub fn sound_name(sound: super::Sound) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::super::Sound;
     use super::*;
     use crate::dictation::hotkey::Hotkey;
@@ -513,9 +511,11 @@ mod tests {
     #[test]
     fn dictate_socket_is_private_to_the_user() {
         let data = Path::new("/home/me/.local/share/Meeting Transcriber");
+        // Absolute on the host too: on Windows "/run/user/1000" has no drive.
+        let runtime = std::env::temp_dir().join("run-user-1000");
         assert_eq!(
-            socket_path(Some(Path::new("/run/user/1000")), data),
-            PathBuf::from("/run/user/1000/meeting-transcriber.sock")
+            socket_path(Some(&runtime), data),
+            runtime.join("meeting-transcriber.sock")
         );
         assert_eq!(socket_path(None, data), data.join("dictate.sock"));
         // A relative XDG_RUNTIME_DIR is invalid by the spec.

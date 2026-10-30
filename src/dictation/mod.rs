@@ -706,7 +706,11 @@ mod tests {
         assert!(matches!(claim(&path), Claim::Taken));
         drop(first);
         assert!(matches!(claim(&path), Claim::Ours(_)));
-        assert!(matches!(claim(Path::new("/dev/null/x.lock")), Claim::Unchecked));
+        // A lock inside a file can't be made anywhere ("/dev/null/x.lock"
+        // would make C:\dev\null on Windows).
+        let file = path.with_file_name("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(matches!(claim(&file.join("x.lock")), Claim::Unchecked));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
