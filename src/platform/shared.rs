@@ -249,12 +249,22 @@ impl DictateCommand {
         }
     }
 
-    /// Whether the key should be down after this, given whether it is now.
-    pub fn press(self, down_now: bool) -> bool {
+    /// The hotkey event it stands for. A toggle is decided by the
+    /// recorder, which knows whether it records.
+    pub fn key_event(self) -> super::KeyEvent {
         match self {
-            Self::Start => true,
-            Self::Stop => false,
-            Self::Toggle => !down_now,
+            Self::Start => super::KeyEvent::Down,
+            Self::Stop => super::KeyEvent::Up,
+            Self::Toggle => super::KeyEvent::Toggle,
+        }
+    }
+
+    /// The running app's answer, after `ok `.
+    pub fn done(self) -> &'static str {
+        match self {
+            Self::Start => "started",
+            Self::Stop => "stopped",
+            Self::Toggle => "toggled",
         }
     }
 }
@@ -486,10 +496,11 @@ mod tests {
         for cmd in [DictateCommand::Start, DictateCommand::Stop, DictateCommand::Toggle] {
             assert_eq!(DictateCommand::parse(cmd.name()), Some(cmd));
         }
-        assert!(DictateCommand::Start.press(true));
-        assert!(!DictateCommand::Stop.press(false));
-        assert!(DictateCommand::Toggle.press(false));
-        assert!(!DictateCommand::Toggle.press(true));
+        use super::super::KeyEvent;
+        assert_eq!(DictateCommand::Start.key_event(), KeyEvent::Down);
+        assert_eq!(DictateCommand::Stop.key_event(), KeyEvent::Up);
+        assert_eq!(DictateCommand::Toggle.key_event(), KeyEvent::Toggle);
+        assert_eq!(DictateCommand::Toggle.done(), "toggled");
     }
 
     #[test]

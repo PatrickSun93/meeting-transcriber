@@ -226,7 +226,7 @@ How dictation hears the hotkey depends on the session:
   meeting-transcriber dictate stop     # …and came up
   ```
 
-  Desktop shortcuts usually fire once per press, so bind **toggle**: press once to start, again to stop. Use the full path if `~/.local/bin` is not on the desktop's PATH (`./scripts/install-linux.sh` installs it there).
+  Desktop shortcuts usually fire once per press, so bind **toggle**: press once to start, again to stop. A toggle goes by what dictation is doing, so after a pause or a clip that hit the 5-minute limit the next press starts again. Use the full path if `~/.local/bin` is not on the desktop's PATH (`./scripts/install-linux.sh` installs it there).
 
   - **GNOME**: **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → +**. Name *Dictate*, command `meeting-transcriber dictate toggle`, then press the shortcut (e.g. Super+D).
   - **KDE Plasma**: **System Settings → Keyboard → Shortcuts → Add New → Command or Script…**, command `meeting-transcriber dictate toggle`, then set the shortcut.

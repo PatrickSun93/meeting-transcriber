@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 
-use super::super::KeyEvent;
 use super::super::shared::{DictateCommand, socket_path};
 use super::hotkey::Events;
 
@@ -68,9 +67,8 @@ fn serve(stream: &UnixStream, events: &Events) {
     let _ = BufReader::new(stream.take(64)).read_line(&mut line);
     let reply = match DictateCommand::parse(&line) {
         Some(command) => {
-            let down = command.press(events.is_down());
-            events.send(if down { KeyEvent::Down } else { KeyEvent::Up });
-            if down { "ok started\n" } else { "ok stopped\n" }.to_string()
+            events.send(command.key_event());
+            format!("ok {}\n", command.done())
         }
         None => format!("error unknown command {:?}; use start, stop or toggle\n", line.trim()),
     };
@@ -110,6 +108,7 @@ fn send_to(path: &Path, command: &str) -> Result<String> {
 mod tests {
     use std::sync::Mutex;
 
+    use super::super::super::KeyEvent;
     use super::*;
 
     #[test]
@@ -122,15 +121,11 @@ mod tests {
         let record = seen.clone();
         let events = Events::new(Box::new(move |e| record.lock().unwrap().push(e)));
         listen_at(&path, events.clone()).unwrap();
-        assert_eq!(send_to(&path, "toggle").unwrap(), "started");
-        assert_eq!(send_to(&path, "toggle").unwrap(), "stopped");
+        assert_eq!(send_to(&path, "toggle").unwrap(), "toggled");
         assert_eq!(send_to(&path, "start").unwrap(), "started");
         assert_eq!(send_to(&path, "STOP").unwrap(), "stopped");
         assert!(send_to(&path, "dance").is_err());
-        assert_eq!(
-            *seen.lock().unwrap(),
-            [KeyEvent::Down, KeyEvent::Up, KeyEvent::Down, KeyEvent::Up]
-        );
+        assert_eq!(*seen.lock().unwrap(), [KeyEvent::Toggle, KeyEvent::Down, KeyEvent::Up]);
         // A second copy does not take the socket over.
         assert!(listen_at(&path, events).is_err());
         let _ = std::fs::remove_dir_all(&dir);

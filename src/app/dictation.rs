@@ -168,11 +168,13 @@ impl App {
             return;
         }
         let keys = self.dict.dictation.key_sender();
+        let toggle = self.dict.dictation.toggle_sender();
         let events = self.dict.key_events.0.clone();
         let ctx = self.ctx.clone();
         let result = platform::watch_hotkey(self.dict.settings.hotkey(), move |event| match event {
             KeyEvent::Down => keys(true),
             KeyEvent::Up => keys(false),
+            KeyEvent::Toggle => toggle(),
             other => {
                 let _ = events.send(other);
                 ctx.request_repaint();
@@ -290,7 +292,7 @@ impl App {
                             .to_string(),
                     );
                 }
-                KeyEvent::CaptureCancelled | KeyEvent::Down | KeyEvent::Up => {}
+                KeyEvent::CaptureCancelled | KeyEvent::Down | KeyEvent::Up | KeyEvent::Toggle => {}
             }
         }
     }

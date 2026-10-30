@@ -44,29 +44,17 @@ static X11_KEYS: AtomicBool = AtomicBool::new(false);
 /// Where every source's events go, one at a time.
 pub(super) struct Events {
     on_event: Mutex<Box<dyn Fn(KeyEvent) + Send>>,
-    /// Whether the last event was `Down`, for `dictate toggle`.
-    down: AtomicBool,
 }
 
 impl Events {
     pub(super) fn new(on_event: Box<dyn Fn(KeyEvent) + Send>) -> Arc<Self> {
         Arc::new(Self {
             on_event: Mutex::new(on_event),
-            down: AtomicBool::new(false),
         })
     }
 
     pub(super) fn send(&self, event: KeyEvent) {
-        match event {
-            KeyEvent::Down => self.down.store(true, Ordering::Relaxed),
-            KeyEvent::Up => self.down.store(false, Ordering::Relaxed),
-            _ => {}
-        }
         (self.on_event.lock().unwrap_or_else(|e| e.into_inner()))(event);
-    }
-
-    pub(super) fn is_down(&self) -> bool {
-        self.down.load(Ordering::Relaxed)
     }
 }
 
@@ -103,7 +91,7 @@ pub(in crate::platform) fn start_hotkey(watch: HotkeyWatch, on_event: Box<dyn Fn
     let has = |var: &str| std::env::var_os(var).is_some_and(|v| !v.is_empty());
     for source in key_sources(system::wayland(), has("DISPLAY")) {
         match source {
-            KeySource::X11 => match start_x11(watch.clone(), events.clone()) {
+            KeySource::X11 => match start_x11(watch.clone(), events.clone(), listening) {
                 Ok(()) => return Ok(()),
                 Err(e) => eprintln!("dictation: no X11 hotkey: {e:#}"),
             },
@@ -121,8 +109,9 @@ pub(in crate::platform) fn start_hotkey(watch: HotkeyWatch, on_event: Box<dyn Fn
 }
 
 /// Listens for raw key events on the root window: XInput 2 sends them
-/// whichever window has the focus. Only reads them.
-fn start_x11(watch: HotkeyWatch, events: Arc<Events>) -> Result<()> {
+/// whichever window has the focus. Only reads them. `listening`: whether
+/// `dictate` still works should the display go away.
+fn start_x11(watch: HotkeyWatch, events: Arc<Events>, listening: bool) -> Result<()> {
     let (conn, screen) = x11rb::connect(None).context("no X11 display")?;
     let version = conn
         .xinput_xi_query_version(2, 2)
@@ -149,9 +138,26 @@ fn start_x11(watch: HotkeyWatch, events: Arc<Events>) -> Result<()> {
     X11_KEYS.store(true, Ordering::Relaxed);
     std::thread::Builder::new()
         .name("hotkey".into())
-        .spawn(move || x11_loop(&conn, &watch, &events))
+        .spawn(move || {
+            x11_loop(&conn, &watch, &events);
+            X11_KEYS.store(false, Ordering::Relaxed);
+            // Whatever was held is let go of, and the window stops naming
+            // a key that no longer works.
+            events.send(KeyEvent::Up);
+            lost_hotkey(&watch, &events, listening);
+        })
         .context("could not start the hotkey thread")?;
     Ok(())
+}
+
+/// The hotkey's source ended: `dictate` is all that is left, if it listens;
+/// otherwise the window says the hotkey stopped.
+fn lost_hotkey(watch: &HotkeyWatch, events: &Events, listening: bool) {
+    if listening {
+        watch.set_system_key(Some(NO_SHORTCUT.into()));
+    } else {
+        events.send(KeyEvent::Stopped);
+    }
 }
 
 fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
@@ -162,7 +168,7 @@ fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
             Ok(_) => continue,
             Err(e) => {
                 eprintln!("dictation: lost the X11 display: {e}");
-                break;
+                return;
             }
         };
         if watch.capturing() {
@@ -180,10 +186,6 @@ fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
             events.send(if down { KeyEvent::Down } else { KeyEvent::Up });
         }
     }
-    X11_KEYS.store(false, Ordering::Relaxed);
-    // Whatever was held is let go of. `dictate` still works, so this is
-    // not reported as the hotkey stopping.
-    events.send(KeyEvent::Up);
 }
 
 /// Asks the portal for a global shortcut, on a thread of its own: binding
@@ -192,13 +194,16 @@ fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
 fn start_portal(watch: HotkeyWatch, events: Arc<Events>, listening: bool) {
     watch.set_system_key(Some(PORTAL_WAITING.into()));
     let spawned = std::thread::Builder::new().name("hotkey-portal".into()).spawn(move || {
-        if let Err(e) = run_portal(&watch, &events) {
+        let mut held = false;
+        let result = run_portal(&watch, &events, &mut held);
+        if held {
+            // The portal went away mid-press, and Wayland lets nobody ask
+            // whether the keys are still down: stop rather than record on.
+            events.send(KeyEvent::Up);
+        }
+        if let Err(e) = result {
             eprintln!("dictation: no global shortcut from the desktop: {e:#}");
-            if listening {
-                watch.set_system_key(Some(NO_SHORTCUT.into()));
-            } else {
-                events.send(KeyEvent::Stopped);
-            }
+            lost_hotkey(&watch, &events, listening);
         }
     });
     if let Err(e) = spawned {
@@ -208,7 +213,8 @@ fn start_portal(watch: HotkeyWatch, events: Arc<Events>, listening: bool) {
 
 /// Creates a shortcuts session, binds the dictation shortcut and turns its
 /// activations into key events, for as long as the session bus lasts.
-fn run_portal(watch: &HotkeyWatch, events: &Events) -> Result<()> {
+/// `held`: whether the shortcut is down, as last reported.
+fn run_portal(watch: &HotkeyWatch, events: &Events, held: &mut bool) -> Result<()> {
     let conn = zbus::blocking::Connection::session().context("no session bus")?;
     let portal = zbus::blocking::Proxy::new(&conn, PORTAL, PORTAL_PATH, SHORTCUTS)?;
     let created = portal_call(&conn, "CreateSession", "mt_session", |mut options| {
@@ -247,11 +253,8 @@ fn run_portal(watch: &HotkeyWatch, events: &Events) -> Result<()> {
                     continue;
                 };
                 if id == SHORTCUT_ID {
-                    events.send(if member.as_str() == "Activated" {
-                        KeyEvent::Down
-                    } else {
-                        KeyEvent::Up
-                    });
+                    *held = member.as_str() == "Activated";
+                    events.send(if *held { KeyEvent::Down } else { KeyEvent::Up });
                 }
             }
             // The user changed it in the desktop's settings.

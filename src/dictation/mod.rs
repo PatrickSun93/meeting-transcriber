@@ -46,6 +46,18 @@ const HELD_CHECK: Duration = Duration::from_millis(250);
 /// Says whether the hotkey is down right now, or None if it can't tell.
 type KeyProbe = Arc<dyn Fn() -> Option<bool> + Send + Sync>;
 
+/// What the recorder is told about the hotkey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Press {
+    Down,
+    Up,
+    /// Start, or stop if recording (`meeting-transcriber dictate toggle`).
+    /// Decided by the recorder, which alone knows whether it records: a
+    /// press while paused, or a clip that hit the limit, leaves no stale
+    /// "down" for the next toggle to undo.
+    Toggle,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictationConfig {
     /// Off: the hotkey does nothing.
@@ -190,7 +202,7 @@ fn now() -> NaiveDateTime {
 /// The running dictation threads.
 pub struct Dictation {
     shared: Arc<Shared>,
-    keys: Sender<bool>,
+    keys: Sender<Press>,
 }
 
 impl Dictation {
@@ -234,7 +246,15 @@ impl Dictation {
     pub fn key_sender(&self) -> impl Fn(bool) + Send + 'static {
         let keys = self.keys.clone();
         move |down| {
-            let _ = keys.send(down);
+            let _ = keys.send(if down { Press::Down } else { Press::Up });
+        }
+    }
+
+    /// Starts recording, or stops if it is. Safe to call from any thread.
+    pub fn toggle_sender(&self) -> impl Fn() + Send + 'static {
+        let keys = self.keys.clone();
+        move || {
+            let _ = keys.send(Press::Toggle);
         }
     }
 
@@ -294,6 +314,15 @@ impl Dictation {
     }
 }
 
+/// A toggle as the press it stands for, given whether a recording runs.
+fn toggled(press: Press, recording: bool) -> Press {
+    match press {
+        Press::Toggle if recording => Press::Up,
+        Press::Toggle => Press::Down,
+        other => other,
+    }
+}
+
 /// Whether a recording's hotkey was let go of without an event saying so.
 /// Only once the key has been seen down: a probe that always says "up"
 /// (no permission to ask) must not cut every recording short.
@@ -320,7 +349,7 @@ struct Recording {
 
 /// The recorder: starts the microphone when the hotkey goes down and hands
 /// the clip to the finisher when it comes up (or the clip gets too long).
-fn record_loop(shared: &Shared, keys: &Receiver<bool>, clips: &Sender<Clip>) {
+fn record_loop(shared: &Shared, keys: &Receiver<Press>, clips: &Sender<Clip>) {
     let mut recording: Option<Recording> = None;
     let mut unmute_at: Option<Instant> = None;
     loop {
@@ -331,8 +360,8 @@ fn record_loop(shared: &Shared, keys: &Receiver<bool>, clips: &Sender<Clip>) {
         let unmute = unmute_at.map_or_else(crossbeam_channel::never, crossbeam_channel::at);
         let mut stop = false;
         crossbeam_channel::select! {
-            recv(keys) -> key => match key {
-                Ok(true) if recording.is_none() => {
+            recv(keys) -> key => match key.map(|k| toggled(k, recording.is_some())) {
+                Ok(Press::Down) if recording.is_none() => {
                     recording = start_recording(shared);
                     // Only a new recording takes over the mute; a press
                     // that records nothing (paused) must not keep Me
@@ -341,8 +370,8 @@ fn record_loop(shared: &Shared, keys: &Receiver<bool>, clips: &Sender<Clip>) {
                         unmute_at = None;
                     }
                 }
-                Ok(false) => stop = true,
-                Ok(true) => {}
+                Ok(Press::Up) => stop = true,
+                Ok(_) => {}
                 Err(_) => break,
             },
             recv(audio) -> packet => match (packet, recording.as_mut()) {
@@ -646,6 +675,14 @@ mod tests {
             .phase(),
             Phase::Paused
         );
+    }
+
+    #[test]
+    fn a_toggle_starts_or_stops_by_what_the_recorder_does() {
+        assert_eq!(toggled(Press::Toggle, false), Press::Down);
+        assert_eq!(toggled(Press::Toggle, true), Press::Up);
+        assert_eq!(toggled(Press::Down, true), Press::Down);
+        assert_eq!(toggled(Press::Up, false), Press::Up);
     }
 
     #[test]

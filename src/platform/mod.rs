@@ -84,6 +84,9 @@ pub enum KeyEvent {
     Down,
     /// …and came back up.
     Up,
+    /// Start dictating, or stop if dictating (Linux: `meeting-transcriber
+    /// dictate toggle`).
+    Toggle,
     /// The key pressed while capturing (see `HotkeyWatch::capture_next`).
     Captured(Hotkey),
     /// Escape was pressed while capturing.
