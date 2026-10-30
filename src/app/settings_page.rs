@@ -92,7 +92,7 @@ impl App {
             if ui.add_enabled(can_delete, egui::Button::new("🗑  Delete")).clicked() {
                 self.confirm_delete = Some(model);
             }
-            if ui.button("Show in Finder").clicked() {
+            if ui.button(platform::SHOW_IN_FILES).clicked() {
                 platform::reveal_in_finder(&model.path());
             }
             if !in_use {
@@ -161,7 +161,7 @@ impl App {
             if ui.add_enabled(!busy, egui::Button::new("Change…")).clicked() {
                 self.pick_folder(folder);
             }
-            if ui.button("Show in Finder").clicked() {
+            if ui.button(platform::SHOW_IN_FILES).clicked() {
                 platform::open_folder(&shown);
             }
             if ui
@@ -190,6 +190,10 @@ impl App {
                 ui.spinner();
                 ui.label(format!("Moving model {} of {total}…", (done + 1).min(total)));
             });
+            return true;
+        }
+        if let Some(from) = settings::expand_dir(&self.models_move_from) {
+            self.unfinished_move_prompt(ui, &from);
             return true;
         }
         let Some(offer) = &self.move_offer else { return false };
@@ -233,6 +237,39 @@ impl App {
                 });
             });
         true
+    }
+
+    /// A move that failed part-way: its models are still used from the old
+    /// folder until it is retried or given up.
+    fn unfinished_move_prompt(&mut self, ui: &mut Ui, from: &std::path::Path) {
+        let left = models::downloaded_in(from).len();
+        egui::Frame::new()
+            .fill(ui.visuals().warn_fg_color.gamma_multiply(0.1))
+            .corner_radius(8)
+            .inner_margin(egui::Margin::symmetric(12, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(format!(
+                        "{left} model{} still in the old folder",
+                        if left == 1 { " is" } else { "s are" }
+                    ))
+                    .strong(),
+                );
+                ui.weak(format!("Old folder: {}", from.display()));
+                ui.horizontal(|ui| {
+                    if ui.button("Retry move").clicked() {
+                        self.spawn_model_move(from.to_path_buf());
+                    }
+                    if ui
+                        .button("Leave them")
+                        .on_hover_text("Stop using the old folder; its files stay on disk.")
+                        .clicked()
+                    {
+                        self.forget_model_move();
+                    }
+                });
+            });
     }
 
     fn recognition_card(&mut self, ui: &mut Ui) {

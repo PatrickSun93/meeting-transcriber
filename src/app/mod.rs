@@ -103,9 +103,8 @@ struct MoveOffer {
     bytes: u64,
 }
 
-/// Models being moved to a new folder on a background thread.
+/// Models being moved to the models folder on a background thread.
 struct ModelMove {
-    setting: String,
     from: PathBuf,
     progress: Arc<Mutex<(usize, usize)>>,
     done: Receiver<anyhow::Result<usize>>,
@@ -121,6 +120,8 @@ pub struct App {
     /// Folder settings as stored: empty for the default.
     models_dir: String,
     meetings_dir: String,
+    /// The old models folder of an unfinished move, as stored ("" if none).
+    models_move_from: String,
     engine: Option<Engine>,
     /// Outputs of replaced engines. Their workers finish the jobs already
     /// queued (the last speech of a meeting) and then hang up.
@@ -159,6 +160,20 @@ impl App {
         theme::apply(&cc.egui_ctx);
         let settings = Settings::load();
         models::set_configured_dir(settings.models_dir_path());
+        let move_from = settings.models_move_from_path();
+        models::set_move_source(move_from.clone());
+        // Nothing is downloading or moving yet, so these are left over
+        // from a run that was cut short.
+        for dir in [
+            Some(models::models_dir()),
+            Some(models::configured_dir()),
+            move_from.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            models::remove_partial_files(&dir);
+        }
         let mut transcript = Transcript::default();
         transcript.echo.enabled = settings.remove_echo;
         let mut app = Self {
@@ -173,6 +188,7 @@ impl App {
             capture_others: settings.capture_others,
             models_dir: settings.models_dir.clone(),
             meetings_dir: settings.meetings_dir.clone(),
+            models_move_from: settings.models_move_from.clone(),
             engine: None,
             retired: Vec::new(),
             download: None,
@@ -195,6 +211,9 @@ impl App {
             move_offer: None,
             model_move: None,
         };
+        if let Some(from) = move_from {
+            app.spawn_model_move(from);
+        }
         app.ensure_engine();
         app
     }
@@ -378,12 +397,29 @@ impl App {
         self.ensure_engine();
     }
 
+    /// Switches to the offered folder and moves the models into it. The
+    /// new folder and the old one are saved before anything moves, so if
+    /// the app stops halfway the next launch finishes the move, and models
+    /// not moved yet are still found meanwhile.
     fn start_model_move(&mut self, offer: MoveOffer) {
         let from = models::configured_dir();
-        let progress = Arc::new(Mutex::new((0, offer.count)));
+        self.models_dir = offer.setting;
+        self.models_move_from = from.to_string_lossy().into_owned();
+        models::set_configured_dir(settings::expand_dir(&self.models_dir));
+        models::set_move_source(Some(from.clone()));
+        self.save_settings_if_changed();
+        self.spawn_model_move(from);
+    }
+
+    /// Moves the models left in `from` into the models folder, in the
+    /// background.
+    fn spawn_model_move(&mut self, from: PathBuf) {
+        let to = models::configured_dir();
+        let count = models::downloaded_in(&from).len();
+        let progress = Arc::new(Mutex::new((0, count)));
         let (done_tx, done_rx) = crossbeam_channel::bounded(1);
         let ctx = self.ctx.clone();
-        let (p, src, dst) = (progress.clone(), from.clone(), offer.to.clone());
+        let (p, src, dst) = (progress.clone(), from.clone(), to);
         std::thread::spawn(move || {
             let result = models::move_models(&src, &dst, |done, total| {
                 *p.lock().unwrap() = (done, total);
@@ -393,11 +429,23 @@ impl App {
             ctx.request_repaint();
         });
         self.model_move = Some(ModelMove {
-            setting: offer.setting,
             from,
             progress,
             done: done_rx,
         });
+    }
+
+    /// Ends an unfinished move: the old folder is no longer looked in.
+    /// Models still there (if the user gave up on them) stay on disk.
+    fn forget_model_move(&mut self) {
+        self.models_move_from.clear();
+        models::set_move_source(None);
+        self.save_settings_if_changed();
+        // The loaded model can stay loaded only if it is still found.
+        if !self.model.is_downloaded() && !self.recording() {
+            self.retire_engine();
+        }
+        self.ensure_engine();
     }
 
     fn start_session(&mut self) {
@@ -485,15 +533,17 @@ impl App {
         if let Some(m) = &self.model_move
             && let Ok(result) = m.done.try_recv()
         {
-            let (setting, from) = (m.setting.clone(), m.from.clone());
+            let from = m.from.clone();
             self.model_move = None;
-            if let Err(e) = result {
-                self.errors.push(format!(
+            match result {
+                Ok(_) => self.forget_model_move(),
+                // Kept as unfinished: still used from there, and retried
+                // from Settings or on the next launch.
+                Err(e) => self.errors.push(format!(
                     "Some models could not be moved and are still in {}: {e:#}",
                     from.display()
-                ));
+                )),
             }
-            self.apply_models_dir(setting);
         }
     }
 
@@ -615,6 +665,7 @@ impl App {
             remove_echo: self.transcript.echo.enabled,
             models_dir: self.models_dir.clone(),
             meetings_dir: self.meetings_dir.clone(),
+            models_move_from: self.models_move_from.clone(),
         }
     }
 

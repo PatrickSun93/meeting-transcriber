@@ -67,13 +67,21 @@ pub const MODELS_ENV: &str = "MEETING_TRANSCRIBER_MODELS";
 /// every model lookup needs it and it changes rarely (only from Settings).
 static CONFIGURED_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
 
+/// The old folder of a models move that has not finished. Models still
+/// there are found as if they were already in the models folder, so the
+/// app keeps working while (or after) a move is interrupted.
+static MOVE_SOURCE: RwLock<Option<PathBuf>> = RwLock::new(None);
+
 impl ModelInfo {
     pub fn by_id(id: &str) -> Option<ModelInfo> {
         MODELS.iter().copied().find(|m| m.id == id)
     }
 
+    /// Where the model is: the models folder, or the old folder of an
+    /// unfinished move if it is still there. The models folder when it is
+    /// in neither.
     pub fn path(&self) -> PathBuf {
-        models_dir().join(self.file)
+        locate(self.file, &models_dir(), move_source().as_deref())
     }
 
     pub fn is_downloaded(&self) -> bool {
@@ -119,6 +127,15 @@ pub fn set_configured_dir(dir: Option<PathBuf>) {
     *CONFIGURED_DIR.write().unwrap_or_else(|e| e.into_inner()) = dir;
 }
 
+/// Sets (or clears) the old folder of an unfinished move.
+pub fn set_move_source(dir: Option<PathBuf>) {
+    *MOVE_SOURCE.write().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+fn move_source() -> Option<PathBuf> {
+    MOVE_SOURCE.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// The folder from Settings, or the default, ignoring the environment.
 pub fn configured_dir() -> PathBuf {
     resolve_models_dir(None, CONFIGURED_DIR.read().unwrap_or_else(|e| e.into_inner()).clone())
@@ -150,16 +167,25 @@ pub fn downloaded_in(dir: &Path) -> Vec<(ModelInfo, u64)> {
 }
 
 /// Moves every known model from `from` to `to`, reporting (files done,
-/// files total). A model already present in `to` is left where it is.
-/// Returns how many were moved.
+/// files total). A different model file already in `to` is kept and so is
+/// the one in `from`; an identical one is the copy an interrupted move
+/// finished, so the leftover in `from` is removed. Returns how many were
+/// moved. Running it again after an interruption finishes the move.
 pub fn move_models(from: &Path, to: &Path, mut progress: impl FnMut(usize, usize)) -> Result<usize> {
     let models = downloaded_in(from);
     std::fs::create_dir_all(to).with_context(|| format!("could not create {}", to.display()))?;
+    // The same folder by another name: "moving" would delete the models.
+    if same_dir(from, to) {
+        return Ok(0);
+    }
     let mut moved = 0;
-    for (i, (model, _)) in models.iter().enumerate() {
+    for (i, (model, size)) in models.iter().enumerate() {
         progress(i, models.len());
         let (src, dst) = (from.join(model.file), to.join(model.file));
         if dst.exists() {
+            if file_size(&dst) == Some(*size) && same_contents(&src, &dst) {
+                std::fs::remove_file(&src).with_context(|| format!("could not remove the moved {}", src.display()))?;
+            }
             continue;
         }
         move_file(&src, &dst).with_context(|| format!("could not move {}", model.file))?;
@@ -167,6 +193,72 @@ pub fn move_models(from: &Path, to: &Path, mut progress: impl FnMut(usize, usize
     }
     progress(models.len(), models.len());
     Ok(moved)
+}
+
+/// `file` in `dir`, else in `old` (an unfinished move's source) if it is
+/// there, else where it would be in `dir`.
+fn locate(file: &str, dir: &Path, old: Option<&Path>) -> PathBuf {
+    let path = dir.join(file);
+    match old.map(|o| o.join(file)) {
+        Some(old) if !path.is_file() && old.is_file() => old,
+        _ => path,
+    }
+}
+
+/// Byte-for-byte equal. Reads both files, so only for the rare case of a
+/// model in both folders, on the move's own thread.
+fn same_contents(a: &Path, b: &Path) -> bool {
+    let (Ok(mut a), Ok(mut b)) = (File::open(a), File::open(b)) else {
+        return false;
+    };
+    let (mut buf_a, mut buf_b) = (vec![0u8; 1 << 20], vec![0u8; 1 << 20]);
+    loop {
+        let Ok(n) = read_full(&mut a, &mut buf_a) else {
+            return false;
+        };
+        let Ok(m) = read_full(&mut b, &mut buf_b) else {
+            return false;
+        };
+        if n != m || buf_a[..n] != buf_b[..m] {
+            return false;
+        }
+        if n == 0 {
+            return true;
+        }
+    }
+}
+
+/// Fills `buf` unless the file ends first; returns the bytes read.
+fn read_full(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Deletes `ggml-*.bin.part` files in `dir`: what an interrupted download
+/// or cross-disk move leaves behind. Only call it while neither is running.
+/// Returns how many were removed.
+pub fn remove_partial_files(dir: &Path) -> usize {
+    let partial = |name: &str| name.starts_with("ggml-") && name.ends_with(".bin.part");
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| partial(&e.file_name().to_string_lossy()))
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
 }
 
 /// A rename is instant on the same disk; across disks it fails, so copy.
@@ -198,7 +290,8 @@ pub fn download(
     cancel: Arc<AtomicBool>,
     mut progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf> {
-    let target = model.path();
+    // Always into the models folder, never the old folder of a move.
+    let target = models_dir().join(model.file);
     let dir = target.parent().context("model path has no folder")?;
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     let part = target.with_extension("bin.part");
@@ -294,10 +387,49 @@ mod tests {
         assert_eq!(calls.last(), Some(&(2, 2)));
         assert_eq!(std::fs::read(to.join("ggml-base.bin")).unwrap(), b"base");
         assert!(!from.join("ggml-base.bin").exists());
-        // Already in the new folder: neither copy is touched.
+        // A different file already in the new folder: neither copy is touched.
         assert_eq!(std::fs::read(to.join("ggml-small.bin")).unwrap(), b"small-new");
         assert!(from.join("ggml-small.bin").exists());
         assert!(from.join("notes.txt").exists());
+        // Moving a folder onto itself moves (and deletes) nothing.
+        assert_eq!(move_models(&to, &to.join("..").join("new"), |_, _| {}).unwrap(), 0);
+        assert_eq!(downloaded_in(&to).len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn interrupted_move_is_finished_without_leftovers() {
+        let root = temp_dir("resume");
+        let (from, to) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        // Stopped mid-way: base was copied but not yet removed from the old
+        // folder, small was being copied, medium was not reached.
+        std::fs::write(from.join("ggml-base.bin"), b"base").unwrap();
+        std::fs::write(to.join("ggml-base.bin"), b"base").unwrap();
+        std::fs::write(from.join("ggml-small.bin"), b"small").unwrap();
+        std::fs::write(to.join("ggml-small.bin.part"), b"sm").unwrap();
+        std::fs::write(from.join("ggml-medium-q5_0.bin"), b"medium").unwrap();
+        std::fs::write(to.join("notes.part"), b"not ours").unwrap();
+
+        assert_eq!(remove_partial_files(&to), 1);
+        assert!(to.join("notes.part").exists());
+        let moved = move_models(&from, &to, |_, _| {}).unwrap();
+
+        assert_eq!(moved, 2);
+        assert!(downloaded_in(&from).is_empty());
+        assert_eq!(downloaded_in(&to).len(), 3);
+        assert_eq!(std::fs::read(to.join("ggml-small.bin")).unwrap(), b"small");
+        assert!(!to.join("ggml-small.bin.part").exists());
+        assert_eq!(remove_partial_files(&root.join("missing")), 0);
+        // While a move is unfinished, models are found in either folder.
+        std::fs::write(from.join("ggml-large-v3-q5_0.bin"), b"large").unwrap();
+        let large = "ggml-large-v3-q5_0.bin";
+        assert_eq!(locate(large, &to, Some(&from)), from.join(large));
+        assert_eq!(locate("ggml-small.bin", &to, Some(&from)), to.join("ggml-small.bin"));
+        assert_eq!(locate("ggml-base.bin", &from, Some(&to)), to.join("ggml-base.bin"));
+        assert_eq!(locate("ggml-tiny.bin", &to, Some(&from)), to.join("ggml-tiny.bin"));
+        assert_eq!(locate(large, &to, None), to.join(large));
         let _ = std::fs::remove_dir_all(&root);
     }
 

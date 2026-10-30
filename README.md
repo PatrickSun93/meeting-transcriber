@@ -109,7 +109,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Setting | Notes |
 | --- | --- |
 | Model | Every model with its size and whether it is downloaded: **Use**, **Download** (with Cancel), **Delete** and **Show in Finder**. **Large v3 Turbo** is the best balance on M-series Macs. **Large v3** (1031 MB) is more accurate but slower. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. Models can't be switched while recording. |
-| Models folder | Where models are stored. When you pick a new folder, the app offers to move the downloaded models there. |
+| Models folder | Where models are stored. When you pick a new folder, the app offers to move the downloaded models there. If the app quits during the move, it finishes the move the next time it starts, and models not moved yet are still used from the old folder. Half-copied or half-downloaded files (`*.bin.part`) are deleted at startup. |
 | Meetings folder | Where meetings are saved and listed from. |
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
@@ -141,7 +141,11 @@ MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav ca
 
 `MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is `~/Library/Application Support/Meeting Transcriber/models`.
 
-CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run.
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also runs clippy and the tests on Linux.
+
+### Windows and Linux
+
+The app is made for macOS, but the code also builds on Linux (checked in CI) and is meant to build on Windows (`cargo run --release`; Linux needs `libasound2-dev`, both need CMake and a C++ compiler for whisper.cpp). There, *Me* (the microphone), the meeting library, notes and the reader work; Whisper runs on the CPU, so pick a smaller model. *Others* is macOS-only for now, since system audio is captured with ScreenCaptureKit. Folder pickers use zenity or kdialog on Linux and the standard dialog on Windows. Settings and models live in the platform's data folder (`~/.local/share/Meeting Transcriber` on Linux, `%APPDATA%\Meeting Transcriber` on Windows). Windows builds are not tested yet.
 
 | File | Role |
 | --- | --- |
@@ -159,7 +163,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/app/settings_page.rs` | Models, folders, recognition options |
 | `src/app/sidebar.rs` | New meeting, search, meeting list, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
-| `src/app/platform.rs` | Finder and the folder picker |
+| `src/app/platform.rs` | The file manager and the folder picker (macOS, Windows, Linux) |
 | `src/models.rs` | Model list, folders, download and moving |
 | `src/settings.rs` | Saved settings |
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |

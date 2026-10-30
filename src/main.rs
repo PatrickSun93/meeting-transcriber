@@ -71,8 +71,11 @@ fn run_transcribe(args: &[String]) -> Result<()> {
         bail!("give at least one of --me or --others\n\n{USAGE}");
     }
 
-    // Same models folder as the app.
-    models::set_configured_dir(Settings::load().models_dir_path());
+    // Same models folder as the app, including models an unfinished move
+    // has not brought over yet.
+    let settings = Settings::load();
+    models::set_configured_dir(settings.models_dir_path());
+    models::set_move_source(settings.models_move_from_path());
     let model_path = match model {
         Some(m) => ModelInfo::by_id(&m).map_or_else(|| PathBuf::from(&m), |info| info.path()),
         None => DEFAULT_MODEL.path(),

@@ -14,6 +14,10 @@ pub struct Settings {
     pub models_dir: String,
     /// Where transcripts are saved. Empty for the default; may start with `~/`.
     pub meetings_dir: String,
+    /// The old models folder while models are being moved out of it; empty
+    /// otherwise. Saved before the move starts, so a move cut short (the
+    /// app quit, the Mac slept) is finished on the next launch.
+    pub models_move_from: String,
 }
 
 impl Default for Settings {
@@ -26,6 +30,7 @@ impl Default for Settings {
             remove_echo: true,
             models_dir: String::new(),
             meetings_dir: String::new(),
+            models_move_from: String::new(),
         }
     }
 }
@@ -71,6 +76,7 @@ impl Settings {
                 "remove_echo" => s.remove_echo = flag,
                 "models_dir" => s.models_dir = value.to_string(),
                 "meetings_dir" => s.meetings_dir = value.to_string(),
+                "models_move_from" => s.models_move_from = value.to_string(),
                 _ => {}
             }
         }
@@ -79,20 +85,26 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\n",
+            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\nmodels_move_from={}\n",
             self.model,
             self.language,
             self.capture_me,
             self.capture_others,
             self.remove_echo,
             self.models_dir,
-            self.meetings_dir
+            self.meetings_dir,
+            self.models_move_from
         )
     }
 
     /// The models folder chosen here, or None for the default.
     pub fn models_dir_path(&self) -> Option<PathBuf> {
         expand_dir(&self.models_dir)
+    }
+
+    /// The folder models are still being moved out of, if any.
+    pub fn models_move_from_path(&self) -> Option<PathBuf> {
+        expand_dir(&self.models_move_from)
     }
 
     /// The folder new transcripts are saved to.
@@ -104,12 +116,20 @@ impl Settings {
         std::fs::read_to_string(settings_path()).map_or_else(|_| Self::default(), |t| Self::parse(&t))
     }
 
+    /// Writes through a temporary file, so a crash mid-write cannot leave
+    /// settings that disagree with where the models are.
     pub fn save(&self) {
         let path = settings_path();
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(path, self.to_text());
+        let tmp = path.with_extension("txt.saving");
+        if std::fs::write(&tmp, self.to_text())
+            .and_then(|()| std::fs::rename(&tmp, &path))
+            .is_err()
+        {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 }
 
@@ -127,6 +147,7 @@ mod tests {
             remove_echo: false,
             models_dir: "/Volumes/Big Disk/whisper=models".into(),
             meetings_dir: "~/Notes/Meetings".into(),
+            models_move_from: "/Volumes/Old Disk/models".into(),
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(
@@ -140,6 +161,7 @@ mod tests {
         let old = Settings::parse("model=base\nlanguage=\ncapture_me=true\ncapture_others=true\nremove_echo=true\n");
         assert_eq!(old.models_dir, "");
         assert_eq!(old.models_dir_path(), None);
+        assert_eq!(old.models_move_from_path(), None);
     }
 
     #[test]
