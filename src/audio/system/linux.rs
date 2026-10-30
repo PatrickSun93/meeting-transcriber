@@ -55,7 +55,27 @@ pub fn start(tx: Sender<AudioPacket>) -> Result<Capture> {
             std::io::ErrorKind::NotFound => anyhow!("{INSTALL_HINT}"),
             _ => anyhow!(e).context("could not start parec"),
         })?;
+    match read_from(&mut child, tx) {
+        Ok((stop, threads)) => {
+            let guard = ParecGuard {
+                child,
+                stop: Some(stop),
+                threads,
+            };
+            Ok(Capture::new("Computer audio (default output)".into(), guard))
+        }
+        Err(e) => {
+            // Otherwise parec would go on recording with nobody reading.
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(e)
+        }
+    }
+}
 
+/// Checks that parec is recording, then reads it on one thread and fills
+/// its gaps on another. Returns what stops the second, and both threads.
+fn read_from(child: &mut Child, tx: Sender<AudioPacket>) -> Result<(Sender<()>, Vec<JoinHandle<()>>)> {
     // Drained on its own thread, so a chatty parec never blocks on a full pipe.
     let mut stderr = child.stderr.take().context("parec has no error output")?;
     let errors = std::thread::spawn(move || {
@@ -76,6 +96,8 @@ pub fn start(tx: Sender<AudioPacket>) -> Result<Capture> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    // Joining `errors` would wait for parec to exit; it ends with parec.
+    drop(errors);
 
     let mut stdout = child.stdout.take().context("parec has no output")?;
     let converter = Converter::new(Speaker::Others, SAMPLE_RATE, 1, tx);
@@ -88,8 +110,14 @@ pub fn start(tx: Sender<AudioPacket>) -> Result<Capture> {
             .spawn(move || {
                 let mut buf = vec![0u8; 16 * 1024];
                 let mut carry = Vec::new();
-                // Ends when parec is killed (end of file).
-                while let Ok(n @ 1..) = stdout.read(&mut buf) {
+                loop {
+                    let n = match stdout.read(&mut buf) {
+                        // End of file: parec was stopped.
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    };
                     let samples = decode_f32le(&mut carry, &buf[..n]);
                     paced
                         .lock()
@@ -108,13 +136,5 @@ pub fn start(tx: Sender<AudioPacket>) -> Result<Capture> {
             }
         })
         .context("could not start the parec timer")?;
-
-    let guard = ParecGuard {
-        child,
-        stop: Some(stop_tx),
-        threads: vec![reader, ticker],
-    };
-    // Joining `errors` would wait for parec to exit; it ends with parec.
-    drop(errors);
-    Ok(Capture::new("Computer audio (default output)".into(), guard))
+    Ok((stop_tx, vec![reader, ticker]))
 }
