@@ -206,7 +206,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 
 ### Windows
 
-- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Press a key…** takes any other key.
+- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Press a key…** takes any other key.
 - **Pasting** presses Ctrl+V. Windows does not let an app type into one running as administrator, so in such a window the text is only copied: press Ctrl+V yourself.
 - **Sounds** are the system's *Device Connect* (start), *Notification* (done) and *Critical Stop* (error), as set in **Settings → System → Sound → More sound settings**. Like everything the PC plays, they are part of a meeting's *Others* track while you record one.
 - **Tray**: the icon in the notification area is a coloured microphone (green ready, red recording, amber transcribing, grey paused or loading, crimson `!` after an error). Left-click opens the window; right-click shows the last 10 dictations (click to copy), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app there; Windows may tuck the icon under the **^** arrow, and **Settings → Personalization → Taskbar → Other system tray icons** keeps it in view.

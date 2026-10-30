@@ -17,10 +17,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow,
-    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HICON, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MF_UNCHECKED, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SM_CXSMICON,
-    SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_EX_STYLE, WM_APP,
-    WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+    DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics, HICON, KillTimer, MF_CHECKED, MF_GRAYED,
+    MF_SEPARATOR, MF_STRING, MF_UNCHECKED, MSG, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SM_CXSMICON, SetForegroundWindow, SetTimer, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER,
+    WNDCLASSW, WS_OVERLAPPED,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -32,6 +33,9 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// Sent by `Tray::set`: the icon or its tooltip changed.
 const WM_REFRESH: u32 = WM_APP + 2;
 const ICON_ID: u32 = 1;
+/// The timer that tries adding the icon again, and how often.
+const ADD_TIMER: usize = 1;
+const ADD_EVERY_MS: u32 = 2_000;
 const ICONS: [TrayIcon; 6] = [
     TrayIcon::Loading,
     TrayIcon::Ready,
@@ -173,11 +177,7 @@ fn run(shared: Arc<Shared>, ready: &Sender<Result<isize>>) {
         .filter_map(|icon| make_icon(*icon).ok().map(|h| (*icon, h)))
         .collect();
     TRAY.with(|tray| *tray.borrow_mut() = Some(Thread { shared, icons }));
-    // At login the taskbar may not be there yet: the icon is then added
-    // when Explorer says it is (`TaskbarCreated`).
-    if !notify(NIM_ADD, window) {
-        eprintln!("tray: the taskbar is not there yet");
-    }
+    add_icon(window);
     let _ = ready.send(Ok(window.0 as isize));
     let mut msg = MSG::default();
     // SAFETY: a standard message loop on this thread; it ends at WM_QUIT,
@@ -258,12 +258,34 @@ unsafe extern "system" fn window_proc(window: HWND, message: u32, wparam: WPARAM
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == ADD_TIMER => {
+            add_icon(window);
+            LRESULT(0)
+        }
         m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
-            notify(NIM_ADD, window);
+            add_icon(window);
             LRESULT(0)
         }
         // SAFETY: the arguments are the ones this call was given.
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+    }
+}
+
+/// Adds the icon. At login the taskbar may not be there yet, or too busy to
+/// answer: then it is tried again every `ADD_EVERY_MS` until it works (the
+/// window may already be hidden, and the icon is the way back to it), and
+/// again whenever Explorer restarts (`TaskbarCreated`).
+fn add_icon(window: HWND) {
+    // SAFETY: the window is this thread's own; setting the timer again
+    // only restarts it, and killing one that is not running fails harmlessly.
+    unsafe {
+        // A slow taskbar may add the icon yet report a failure: then the
+        // icon is there to be updated.
+        if notify(NIM_ADD, window) || notify(NIM_MODIFY, window) {
+            let _ = KillTimer(Some(window), ADD_TIMER);
+        } else {
+            SetTimer(Some(window), ADD_TIMER, ADD_EVERY_MS, None);
+        }
     }
 }
 

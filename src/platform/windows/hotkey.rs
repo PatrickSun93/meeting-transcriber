@@ -2,6 +2,11 @@
 //! on a thread of its own, which runs the message loop the hook is called
 //! from. It only reads key events and passes every one on; it needs no
 //! permission.
+//!
+//! Windows silently removes a low-level hook that is ever too slow to
+//! answer, and nothing tells the app. So the thread runs at the highest
+//! priority (Whisper keeps every core busy while it transcribes) and puts
+//! the hook in afresh now and then, which revives one that was removed.
 
 use std::cell::RefCell;
 
@@ -9,10 +14,11 @@ use anyhow::{Context as _, Result, anyhow};
 use crossbeam_channel::Sender;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_UP, MSG,
-    SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_UP, MSG,
+    SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_TIMER,
 };
 
 use super::super::{HotkeyWatch, KeyEvent};
@@ -20,6 +26,8 @@ use crate::dictation::hotkey::{Hotkey, win};
 
 /// The hook needs no permission, so there is nothing to add.
 pub const HOTKEY_HINT: &str = "";
+/// How often the hook is put in afresh, in milliseconds.
+const REHOOK_EVERY_MS: u32 = 30_000;
 
 /// What the hook procedure works with. It has no argument for it, so it
 /// lives with the hook's thread.
@@ -54,6 +62,16 @@ pub(in crate::platform) fn start_hotkey(watch: HotkeyWatch, on_event: Box<dyn Fn
         .map_err(|_| anyhow!("the hotkey thread ended unexpectedly"))?
 }
 
+/// Installs the hook for this thread.
+fn install() -> windows::core::Result<HHOOK> {
+    // SAFETY: `hook_proc` has the signature Windows calls, and lives as
+    // long as the program. The module handle is this program's own.
+    unsafe {
+        let module = GetModuleHandleW(None).ok().map(|m| HINSTANCE(m.0));
+        SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0)
+    }
+}
+
 /// Installs the hook and runs this thread's message loop, which calls it.
 /// Reports on `ready` whether the hook could be installed, and with
 /// `Stopped` if the loop ever ends.
@@ -65,13 +83,11 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
             held: None,
         })
     });
-    // SAFETY: `hook_proc` has the signature Windows calls, and lives as
-    // long as the program. The module handle is this program's own.
-    let installed = unsafe {
-        let module = GetModuleHandleW(None).ok().map(|m| HINSTANCE(m.0));
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0)
-    };
-    let hook = match installed {
+    // SAFETY: the pseudo-handle of this thread. Failing leaves it as it is.
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
+    let mut hook = match install() {
         Ok(hook) => hook,
         Err(e) => {
             let _ = ready.send(Err(anyhow!("Windows did not allow watching the keyboard: {e}")));
@@ -81,9 +97,20 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
     let _ = ready.send(Ok(()));
     let mut msg = MSG::default();
     // SAFETY: a standard message loop on this thread; GetMessageW returns
-    // 0 at WM_QUIT and -1 on an error, either of which ends it.
+    // 0 at WM_QUIT and -1 on an error, either of which ends it. The timer
+    // has no window and no callback, so it arrives here as WM_TIMER.
     unsafe {
+        SetTimer(None, 0, REHOOK_EVERY_MS, None);
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+            if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
+                // The new hook goes in before the old one comes out; no key
+                // is handled in between, as only this loop calls the hook.
+                if let Ok(fresh) = install() {
+                    let _ = UnhookWindowsHookEx(hook);
+                    hook = fresh;
+                }
+                continue;
+            }
             DispatchMessageW(&msg);
         }
         let _ = UnhookWindowsHookEx(hook);
