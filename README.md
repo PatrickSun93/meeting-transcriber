@@ -222,9 +222,11 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 
 | File | Role |
 | --- | --- |
+| `src/main.rs` | Starts the window, or the command line (`transcribe`, `--help`) |
 | `src/audio/mic.rs` | Microphone capture with cpal; also Others on Windows (WASAPI loopback) |
 | `src/audio/system/` | Others: ScreenCaptureKit on macOS, `parec` on Linux |
 | `src/audio/silence.rs` | Fills gaps from loopback sources that go quiet, so timestamps stay right |
+| `src/audio/file.rs` | WAV files played in real time in place of a live source, for testing |
 | `src/audio/dsp.rs` | Low-pass filter and resampling to 16 kHz mono |
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
 | `src/session.rs` | Connects the sources, chunkers and transcriber |
