@@ -2,6 +2,9 @@
 
 A native app, written in Rust, that writes down your meetings as they happen. It is made for the Mac and also runs on [Windows and Linux](#windows-and-linux). Everything runs on your own computer, and no audio leaves it.
 
+> [!WARNING]
+> **Windows and Linux are untested.** I use and test the app on the Mac only. The Windows and Linux builds compile and pass their unit tests in CI, but nobody has run them on a real PC yet, so recording, dictation, the tray and pasting may have problems there. Please [open an issue](https://github.com/PatrickSun93/meeting-transcriber/issues) if something does not work.
+
 - **Me**: whatever your microphone hears.
 - **Others**: whatever the computer plays, so every other participant counts as one speaker.
 - **Works with any meeting app**: Teams, Zoom, Meet, FaceTime and others. Nothing is installed inside the meeting app.
@@ -66,6 +69,9 @@ The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `
 
 ## Windows and Linux
 
+> [!WARNING]
+> Not yet tested on a real Windows PC or Linux desktop: these builds have only been compiled and unit-tested in CI. Expect rough edges, and please report what you find.
+
 The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *Others*, the meeting library, notes, the reader and Settings. What differs:
 
 | | macOS | Windows | Linux |
@@ -84,7 +90,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
-**Download:** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
 
 To build it yourself instead:
 
