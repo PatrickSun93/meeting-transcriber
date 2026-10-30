@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
-use meeting_transcriber::models::{DEFAULT_MODEL, ModelInfo};
+use meeting_transcriber::models::{self, DEFAULT_MODEL, ModelInfo};
+use meeting_transcriber::settings::Settings;
 use meeting_transcriber::transcriber::WhisperEngine;
 use meeting_transcriber::transcript::format_time;
 use meeting_transcriber::{app, wav};
@@ -70,6 +71,8 @@ fn run_transcribe(args: &[String]) -> Result<()> {
         bail!("give at least one of --me or --others\n\n{USAGE}");
     }
 
+    // Same models folder as the app.
+    models::set_configured_dir(Settings::load().models_dir_path());
     let model_path = match model {
         Some(m) => ModelInfo::by_id(&m).map_or_else(|| PathBuf::from(&m), |info| info.path()),
         None => DEFAULT_MODEL.path(),

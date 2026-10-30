@@ -45,7 +45,7 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 
 3. Open **Meeting Transcriber** from Applications.
 
-4. Click **Download (547 MB)** to fetch the Whisper model. You only do this once.
+4. Click **Download (547 MB)** to fetch the Whisper model. You only do this once. Other models can be downloaded from **Settings**.
 
 ## First run: permissions
 
@@ -58,21 +58,26 @@ If *Others* stays silent, this permission is almost always the reason. After you
 
 ## Using it
 
-1. Press **Start** before or during your meeting.
+1. Press the red record button before or during your meeting.
 2. Talk. Grey italic text is the live guess. It becomes a normal line when the speaker pauses.
-3. Press **Stop** when you're done. Any remaining speech is still transcribed.
+3. Press the button again (now a square) when you're done. Any remaining speech is still transcribed.
 
-Every line is saved as you go to `~/Documents/Meeting Transcripts/Meeting <date> <time>.txt`. **Show file** opens that folder, **Copy all** copies the transcript, and **New transcript** clears the window and starts a new file.
+Every line is saved as you go to `~/Documents/Meeting Transcripts/Meeting <date> <time>.txt` (the folder can be changed in Settings). **Show file** opens that folder, **Copy all** copies the transcript, and **New transcript** clears the window and starts a new file.
 
 **Headphones or speakers?** With headphones, your microphone only hears you. With speakers, it also hears the others. **Remove speaker echo** (on by default) drops your lines that repeat what Others said at the same moment. Short replies such as "Yes." are always kept. Headphones still give the cleanest result.
 
-The app remembers your settings between launches.
+## Settings
+
+Open **Settings** at the bottom of the sidebar. The app remembers your choices in `~/Library/Application Support/Meeting Transcriber/settings.txt`.
 
 | Setting | Notes |
 | --- | --- |
-| Model | **Large v3 Turbo** is the best balance on M-series Macs. **Full precision** is slightly more accurate. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. |
+| Model | Every model with its size and whether it is downloaded: **Use**, **Download** (with Cancel), **Delete** and **Show in Finder**. **Large v3 Turbo** is the best balance on M-series Macs. **Large v3** (1031 MB) is more accurate but slower. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. Models can't be switched while recording. |
+| Models folder | Where models are stored. When you pick a new folder, the app offers to move the downloaded models there. |
+| Meetings folder | Where new transcripts are saved. |
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
+| Remove speaker echo | See above. |
 
 ## Transcribe recordings
 
@@ -98,7 +103,7 @@ To test without a meeting, these variables replace the live sources with WAV fil
 MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav cargo run --release
 ```
 
-`MEETING_TRANSCRIBER_MODELS` points at a different model folder. The default is `~/Library/Application Support/Meeting Transcriber/models`.
+`MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is `~/Library/Application Support/Meeting Transcriber/models`.
 
 CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run.
 
@@ -111,8 +116,15 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/session.rs` | Connects the sources, chunkers and transcriber |
 | `src/transcriber.rs` | Whisper engine and job queue (finals first; stale partials dropped) |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
-| `src/app.rs` | The window (egui) |
-| `src/models.rs` | Model list and download |
+| `src/app/mod.rs` | The window (egui): app state and background work |
+| `src/app/meeting_page.rs` | Record button, status, live transcript |
+| `src/app/settings_page.rs` | Models, folders, recognition options |
+| `src/app/sidebar.rs` | Navigation |
+| `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
+| `src/app/platform.rs` | Finder and the folder picker |
+| `src/models.rs` | Model list, folders, download and moving |
+| `src/settings.rs` | Saved settings |
+| `src/meetings.rs` | Transcript folder and file names |
 | `src/wav.rs` | Offline mode for WAV files |
 
 ## License

@@ -2,9 +2,9 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -31,6 +31,12 @@ pub const MODELS: &[ModelInfo] = &[
         size_mb: 1550,
     },
     ModelInfo {
+        id: "large-v3-q5_0",
+        label: "Large v3 (more accurate, slower)",
+        file: "ggml-large-v3-q5_0.bin",
+        size_mb: 1031,
+    },
+    ModelInfo {
         id: "medium-q5_0",
         label: "Medium (smaller, slower than Turbo)",
         file: "ggml-medium-q5_0.bin",
@@ -54,6 +60,13 @@ pub const DEFAULT_MODEL: ModelInfo = MODELS[0];
 
 const BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+/// Overrides the configured models folder, for development and tests.
+pub const MODELS_ENV: &str = "MEETING_TRANSCRIBER_MODELS";
+
+/// The folder chosen in Settings; None means the default. Global because
+/// every model lookup needs it and it changes rarely (only from Settings).
+static CONFIGURED_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
 impl ModelInfo {
     pub fn by_id(id: &str) -> Option<ModelInfo> {
         MODELS.iter().copied().find(|m| m.id == id)
@@ -67,21 +80,115 @@ impl ModelInfo {
         self.path().is_file()
     }
 
+    /// Size on disk, or None if it is not downloaded.
+    pub fn file_size(&self) -> Option<u64> {
+        file_size(&self.path())
+    }
+
     pub fn url(&self) -> String {
         format!("{BASE_URL}/{}", self.file)
     }
+
+    pub fn delete(&self) -> Result<()> {
+        let path = self.path();
+        std::fs::remove_file(&path).with_context(|| format!("could not delete {}", path.display()))
+    }
 }
 
-/// `~/Library/Application Support/Meeting Transcriber/models` on macOS.
-/// Set MEETING_TRANSCRIBER_MODELS to use another folder.
-pub fn models_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("MEETING_TRANSCRIBER_MODELS") {
-        return PathBuf::from(dir);
-    }
+/// `~/Library/Application Support/Meeting Transcriber` on macOS: settings
+/// and, by default, the models.
+pub fn app_support_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Meeting Transcriber")
-        .join("models")
+}
+
+pub fn default_models_dir() -> PathBuf {
+    app_support_dir().join("models")
+}
+
+/// The folder set by MEETING_TRANSCRIBER_MODELS, if any.
+pub fn env_models_dir() -> Option<PathBuf> {
+    std::env::var_os(MODELS_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Sets the folder chosen in Settings (None for the default).
+pub fn set_configured_dir(dir: Option<PathBuf>) {
+    *CONFIGURED_DIR.write().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+/// The folder from Settings, or the default, ignoring the environment.
+pub fn configured_dir() -> PathBuf {
+    resolve_models_dir(None, CONFIGURED_DIR.read().unwrap_or_else(|e| e.into_inner()).clone())
+}
+
+/// Where models are read and downloaded: MEETING_TRANSCRIBER_MODELS, else
+/// the folder chosen in Settings, else the default.
+pub fn models_dir() -> PathBuf {
+    resolve_models_dir(
+        env_models_dir(),
+        CONFIGURED_DIR.read().unwrap_or_else(|e| e.into_inner()).clone(),
+    )
+}
+
+fn resolve_models_dir(env: Option<PathBuf>, configured: Option<PathBuf>) -> PathBuf {
+    env.or(configured).unwrap_or_else(default_models_dir)
+}
+
+fn file_size(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+/// The known models present in `dir`, with their sizes in bytes.
+pub fn downloaded_in(dir: &Path) -> Vec<(ModelInfo, u64)> {
+    MODELS
+        .iter()
+        .filter_map(|m| file_size(&dir.join(m.file)).map(|size| (*m, size)))
+        .collect()
+}
+
+/// Moves every known model from `from` to `to`, reporting (files done,
+/// files total). A model already present in `to` is left where it is.
+/// Returns how many were moved.
+pub fn move_models(from: &Path, to: &Path, mut progress: impl FnMut(usize, usize)) -> Result<usize> {
+    let models = downloaded_in(from);
+    std::fs::create_dir_all(to).with_context(|| format!("could not create {}", to.display()))?;
+    let mut moved = 0;
+    for (i, (model, _)) in models.iter().enumerate() {
+        progress(i, models.len());
+        let (src, dst) = (from.join(model.file), to.join(model.file));
+        if dst.exists() {
+            continue;
+        }
+        move_file(&src, &dst).with_context(|| format!("could not move {}", model.file))?;
+        moved += 1;
+    }
+    progress(models.len(), models.len());
+    Ok(moved)
+}
+
+/// A rename is instant on the same disk; across disks it fails, so copy.
+fn move_file(src: &Path, dst: &Path) -> Result<()> {
+    if std::fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_then_remove(src, dst)
+}
+
+/// Copies through a `.part` file, so an interrupted copy is never mistaken
+/// for a model, then removes the source.
+fn copy_then_remove(src: &Path, dst: &Path) -> Result<()> {
+    let part = dst.with_extension("bin.part");
+    let copied = std::fs::copy(src, &part)
+        .and_then(|_| File::open(&part)?.sync_all())
+        .and_then(|_| std::fs::rename(&part, dst));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&part);
+        return Err(e).with_context(|| format!("could not copy to {}", dst.display()));
+    }
+    std::fs::remove_file(src).with_context(|| format!("copied, but could not remove {}", src.display()))
 }
 
 /// Downloads a model, reporting (bytes done, bytes total). Writes to a
@@ -150,5 +257,65 @@ mod tests {
             assert!(!m.file.contains(".en"));
         }
         assert_eq!(ModelInfo::by_id("nope"), None);
+    }
+
+    #[test]
+    fn env_beats_configured_beats_default() {
+        let (env, conf) = (PathBuf::from("/env"), PathBuf::from("/conf"));
+        assert_eq!(resolve_models_dir(Some(env.clone()), Some(conf.clone())), env);
+        assert_eq!(resolve_models_dir(None, Some(conf.clone())), conf);
+        assert_eq!(resolve_models_dir(None, None), default_models_dir());
+    }
+
+    /// A fresh, empty folder under the system temp dir.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("meeting-transcriber-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn move_models_moves_only_models_and_keeps_existing_targets() {
+        let root = temp_dir("move");
+        let (from, to) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("ggml-base.bin"), b"base").unwrap();
+        std::fs::write(from.join("ggml-small.bin"), b"small-old").unwrap();
+        std::fs::write(from.join("notes.txt"), b"not a model").unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("ggml-small.bin"), b"small-new").unwrap();
+
+        assert_eq!(downloaded_in(&from).len(), 2);
+        let mut calls = Vec::new();
+        let moved = move_models(&from, &to, |done, total| calls.push((done, total))).unwrap();
+
+        assert_eq!(moved, 1);
+        assert_eq!(calls.last(), Some(&(2, 2)));
+        assert_eq!(std::fs::read(to.join("ggml-base.bin")).unwrap(), b"base");
+        assert!(!from.join("ggml-base.bin").exists());
+        // Already in the new folder: neither copy is touched.
+        assert_eq!(std::fs::read(to.join("ggml-small.bin")).unwrap(), b"small-new");
+        assert!(from.join("ggml-small.bin").exists());
+        assert!(from.join("notes.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copy_fallback_leaves_no_part_file() {
+        let root = temp_dir("copy");
+        let (src, dst) = (root.join("ggml-base.bin"), root.join("sub").join("ggml-base.bin"));
+        std::fs::write(&src, b"weights").unwrap();
+        std::fs::create_dir_all(dst.parent().unwrap()).unwrap();
+
+        copy_then_remove(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(&dst).unwrap(), b"weights");
+        assert!(!src.exists());
+        assert!(!dst.with_extension("bin.part").exists());
+
+        // A missing source fails cleanly, without leaving a partial file.
+        assert!(copy_then_remove(&src, &root.join("other.bin")).is_err());
+        assert!(!root.join("other.bin.part").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
