@@ -129,7 +129,7 @@ impl DictationState {
 
     /// Whether closing the window hides it instead of quitting.
     fn closes_to_tray(&self) -> bool {
-        self.tray.is_some() && self.quit_at.is_none()
+        self.tray.is_some() && self.quit_at.is_none() && platform::can_hide_window()
     }
 }
 
@@ -337,7 +337,7 @@ impl App {
     /// With a menu bar item, the close button hides the window; dictation
     /// and any recording carry on. Quit in the menu (or ⌘Q) really quits.
     fn close_to_tray(&mut self, ctx: &egui::Context) {
-        if self.dict.start_hidden && self.dict.tray.is_some() && self.dict.frames >= 3 {
+        if self.dict.start_hidden && self.dict.closes_to_tray() && self.dict.frames >= 3 {
             self.dict.start_hidden = false;
             self.hide_window(ctx);
         }

@@ -237,8 +237,8 @@ How dictation hears the hotkey depends on the session:
 Also on Linux:
 
 - **Sounds** come from the freedesktop sound theme (*audio-volume-change*, *complete*, *dialog-warning*), through `canberra-gtk-play`, else `paplay` or `pw-play`; with none of them there are no sounds. They are part of a meeting's *Others* track while you record one.
-- **Tray**: a StatusNotifierItem, the same coloured microphone as on Windows, with the same menu; clicking it opens the window. KDE, Cinnamon, XFCE, LXQt and Budgie show it; GNOME only with the AppIndicator extension (Ubuntu has it on). Without a tray, closing the window quits the app, dictation included.
-- **Open at login** writes `~/.config/autostart/meeting-transcriber.desktop`, which starts the program where it is now with `--hidden` (in the tray, where there is one). Switching it off removes the file.
+- **Tray**: a StatusNotifierItem, the same coloured microphone as on Windows, with the same menu; clicking it opens the window. KDE, Cinnamon, XFCE, LXQt and Budgie show it; GNOME only with the AppIndicator extension (Ubuntu has it on). Without a tray, closing the window quits the app, dictation included. So it does on Wayland, where no app may hide its window: minimize it instead to keep dictating.
+- **Open at login** writes `~/.config/autostart/meeting-transcriber.desktop`, which starts the program where it is now with `--hidden` (in the tray, where there is one; on Wayland with the window open). Switching it off removes the file.
 
 ## Settings
 

@@ -282,6 +282,13 @@ pub fn socket_path(runtime_dir: Option<&Path>, data_dir: &Path) -> std::path::Pa
 // ---- Linux: where the hotkey comes from, how text is pasted ----
 
 #[cfg(any(not(any(target_os = "macos", windows)), test))]
+/// Whether the window is a Wayland one, given `WAYLAND_DISPLAY` and
+/// `WAYLAND_SOCKET`: winit picks Wayland when either is set and not empty.
+pub fn wayland_window(display: Option<&str>, socket: Option<&str>) -> bool {
+    [display, socket].into_iter().flatten().any(|v| !v.is_empty())
+}
+
+#[cfg(any(not(any(target_os = "macos", windows)), test))]
 /// A way to see the hotkey on Linux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
@@ -513,6 +520,14 @@ mod tests {
         assert_eq!(socket_path(None, data), data.join("dictate.sock"));
         // A relative XDG_RUNTIME_DIR is invalid by the spec.
         assert_eq!(socket_path(Some(Path::new("run")), data), data.join("dictate.sock"));
+    }
+
+    #[test]
+    fn wayland_windows_are_told_apart() {
+        assert!(wayland_window(Some("wayland-0"), None));
+        assert!(wayland_window(None, Some("5")));
+        assert!(!wayland_window(Some(""), None));
+        assert!(!wayland_window(None, None));
     }
 
     #[test]

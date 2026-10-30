@@ -59,7 +59,7 @@ pub const AUTOSTART_HINT: &str = if cfg!(target_os = "macos") {
 } else if cfg!(windows) {
     "Starts in the notification area when you log in, from where it is now."
 } else {
-    "Starts when you log in, from where it is now; in the tray if the desktop has one."
+    "Starts when you log in, from where it is now: in the tray if the desktop has one (on X11), else with its window open."
 };
 
 /// Under the hotkey, when the system decides what starts dictation (see
@@ -67,6 +67,19 @@ pub const AUTOSTART_HINT: &str = if cfg!(target_os = "macos") {
 pub const SYSTEM_KEY_NOTE: &str = "The desktop decides the dictation shortcut (on Wayland, apps may not watch \
      the keyboard): change it in its keyboard or shortcut settings. Any shortcut there can also run \
      `meeting-transcriber dictate toggle`.";
+
+/// Whether the window can be hidden, leaving the app in the menu bar or
+/// tray. Not on Wayland, where no app may hide its window: closing it
+/// quits there, as without a tray.
+pub fn can_hide_window() -> bool {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return !shared::wayland_window(
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+        std::env::var("WAYLAND_SOCKET").ok().as_deref(),
+    );
+    #[cfg(any(target_os = "macos", windows))]
+    true
+}
 
 /// Something to know about pasting here, shown under "Paste automatically"
 /// (on Wayland, which tool presses Ctrl+V, or that none is installed).
