@@ -14,14 +14,14 @@ pub mod ollama;
 pub mod voice2cursor;
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use chrono::NaiveDateTime;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::audio::dsp::SAMPLE_RATE;
 use crate::audio::{AudioPacket, Capture, start_mic};
@@ -39,6 +39,12 @@ const ENGINE_WAIT: Duration = Duration::from_secs(180);
 /// Longest a clip waits for its text (behind other dictations, or a long
 /// meeting chunk the engine is in the middle of).
 const RESULT_WAIT: Duration = Duration::from_secs(600);
+/// How often a recording asks the keyboard whether the hotkey is still
+/// held, in case its release was never seen.
+const HELD_CHECK: Duration = Duration::from_millis(250);
+
+/// Says whether the hotkey is down right now, or None if it can't tell.
+type KeyProbe = Arc<dyn Fn() -> Option<bool> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictationConfig {
@@ -138,7 +144,8 @@ impl Status {
 /// A finished recording on its way to text.
 struct Clip {
     samples: Vec<f32>,
-    at: NaiveDateTime,
+    /// Where it was archived, if it was.
+    wav: Option<PathBuf>,
 }
 
 struct Shared {
@@ -149,6 +156,7 @@ struct Shared {
     /// Set when a clip needs an engine and none is loaded.
     wants_engine: AtomicBool,
     mute_me: Arc<AtomicBool>,
+    key_probe: Mutex<Option<KeyProbe>>,
     wake: Box<dyn Fn() + Send + Sync>,
 }
 
@@ -200,6 +208,7 @@ impl Dictation {
             engine_changed: Condvar::new(),
             wants_engine: AtomicBool::new(false),
             mute_me: Arc::default(),
+            key_probe: Mutex::default(),
             wake: Box::new(wake),
         });
         let (key_tx, key_rx) = crossbeam_channel::unbounded();
@@ -276,6 +285,27 @@ impl Dictation {
     pub fn mute_me(&self) -> Arc<AtomicBool> {
         self.shared.mute_me.clone()
     }
+
+    /// How a recording can ask whether the hotkey is still down: if its
+    /// release is missed (the event tap was turned off for a moment, the
+    /// hotkey changed mid-press), the recording still ends.
+    pub fn set_key_probe(&self, probe: impl Fn() -> Option<bool> + Send + Sync + 'static) {
+        *self.shared.key_probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(probe));
+    }
+}
+
+/// Whether a recording's hotkey was let go of without an event saying so.
+/// Only once the key has been seen down: a probe that always says "up"
+/// (no permission to ask) must not cut every recording short.
+fn missed_release(seen_down: &mut bool, held: Option<bool>) -> bool {
+    match held {
+        Some(true) => {
+            *seen_down = true;
+            false
+        }
+        Some(false) => *seen_down,
+        None => false,
+    }
 }
 
 /// A recording in progress.
@@ -283,6 +313,9 @@ struct Recording {
     _capture: Capture,
     audio: Receiver<AudioPacket>,
     samples: Vec<f32>,
+    /// Ticks for asking whether the hotkey is still held.
+    held_check: Receiver<Instant>,
+    seen_down: bool,
 }
 
 /// The recorder: starts the microphone when the hotkey goes down and hands
@@ -293,39 +326,58 @@ fn record_loop(shared: &Shared, keys: &Receiver<bool>, clips: &Sender<Clip>) {
     loop {
         let audio = recording.as_ref().map(|r| r.audio.clone());
         let audio = audio.unwrap_or_else(crossbeam_channel::never);
+        let held_check = recording.as_ref().map(|r| r.held_check.clone());
+        let held_check = held_check.unwrap_or_else(crossbeam_channel::never);
         let unmute = unmute_at.map_or_else(crossbeam_channel::never, crossbeam_channel::at);
+        let mut stop = false;
         crossbeam_channel::select! {
             recv(keys) -> key => match key {
                 Ok(true) if recording.is_none() => {
                     recording = start_recording(shared);
-                    unmute_at = None;
-                }
-                Ok(false) => {
-                    if let Some(r) = recording.take() {
-                        stop_recording(shared, r, clips);
-                        unmute_at = Some(Instant::now() + UNMUTE_AFTER);
+                    // Only a new recording takes over the mute; a press
+                    // that records nothing (paused) must not keep Me
+                    // silent for good.
+                    if recording.is_some() {
+                        unmute_at = None;
                     }
                 }
+                Ok(false) => stop = true,
                 Ok(true) => {}
                 Err(_) => break,
             },
-            recv(audio) -> packet => {
-                if let (Ok(packet), Some(r)) = (packet, recording.as_mut()) {
+            recv(audio) -> packet => match (packet, recording.as_mut()) {
+                (Ok(packet), Some(r)) => {
                     r.samples.extend(packet.samples);
                     let max = shared.config().max_seconds.max(1.0);
                     if r.samples.len() as f32 >= max * SAMPLE_RATE as f32 {
                         eprintln!("dictation: stopped at the {max:.0} s limit");
-                        if let Some(r) = recording.take() {
-                            stop_recording(shared, r, clips);
-                            unmute_at = Some(Instant::now() + UNMUTE_AFTER);
-                        }
+                        stop = true;
                     }
+                }
+                // The microphone went away: keep what it heard.
+                (Err(_), Some(_)) => {
+                    eprintln!("dictation: the microphone stopped");
+                    stop = true;
+                }
+                (_, None) => {}
+            },
+            recv(held_check) -> _ => {
+                let probe = shared.key_probe.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                if let (Some(probe), Some(r)) = (probe, recording.as_mut())
+                    && missed_release(&mut r.seen_down, probe())
+                {
+                    eprintln!("dictation: the hotkey's release was missed; stopping");
+                    stop = true;
                 }
             },
             recv(unmute) -> _ => {
                 shared.mute_me.store(false, Ordering::Relaxed);
                 unmute_at = None;
             },
+        }
+        if stop && let Some(r) = recording.take() {
+            stop_recording(shared, r, clips);
+            unmute_at = Some(Instant::now() + UNMUTE_AFTER);
         }
     }
 }
@@ -348,6 +400,8 @@ fn start_recording(shared: &Shared) -> Option<Recording> {
                 _capture: capture,
                 audio: rx,
                 samples: Vec::new(),
+                held_check: crossbeam_channel::tick(HELD_CHECK),
+                seen_down: false,
             })
         }
         Err(e) => {
@@ -373,20 +427,25 @@ fn stop_recording(shared: &Shared, mut recording: Recording, clips: &Sender<Clip
     });
     if keep {
         samples.truncate((cfg.max_seconds.max(1.0) * SAMPLE_RATE as f32) as usize);
-        let _ = clips.send(Clip { samples, at: now() });
+        let at = now();
+        // Saved now, not when its turn to be transcribed comes: a clip
+        // waiting behind others (or for the model) survives a quit.
+        let wav = cfg
+            .save_recordings
+            .then(|| archive::save_clip(&cfg.recordings_dir, at, &samples))
+            .and_then(|saved| saved.map_err(|e| eprintln!("dictation: {e:#}")).ok());
+        let _ = clips.send(Clip { samples, wav });
     } else {
         eprintln!("dictation: {seconds:.2} s is too short, ignored");
     }
 }
 
-/// Turns a clip into text and delivers it: archive, clipboard, paste.
+/// Turns a clip into text and delivers it: beside its WAV, on the
+/// clipboard, pasted.
 fn finish(shared: &Shared, clip: Clip) {
     let cfg = shared.config();
-    let wav = cfg
-        .save_recordings
-        .then(|| archive::save_clip(&cfg.recordings_dir, clip.at, &clip.samples))
-        .and_then(|saved| saved.map_err(|e| eprintln!("dictation: {e:#}")).ok());
-    let result = transcribe(shared, clip.samples, &cfg);
+    let Clip { samples, wav } = clip;
+    let result = transcribe(shared, samples, &cfg);
     match result {
         Ok(Some(text)) => {
             let text = match &cfg.ollama {
@@ -454,7 +513,8 @@ fn transcribe(shared: &Shared, samples: Vec<f32>, cfg: &DictationConfig) -> Resu
         Ok(Output::Dictation(Ok(r))) => Ok(clean_text(&r.text)),
         Ok(Output::Dictation(Err(e))) => bail!("Transcription failed: {e}"),
         Ok(_) => bail!("unexpected transcriber output"),
-        Err(_) => bail!("Transcription did not finish in time"),
+        Err(RecvTimeoutError::Disconnected) => bail!("the transcriber stopped"),
+        Err(RecvTimeoutError::Timeout) => bail!("Transcription did not finish in time"),
     }
 }
 
@@ -481,6 +541,38 @@ fn wait_for_engine(shared: &Shared) -> Result<Sender<Job>> {
             .wait_timeout(engine, left.min(Duration::from_secs(1)))
             .unwrap_or_else(|e| e.into_inner())
             .0;
+    }
+}
+
+/// Whether this copy of the app may dictate.
+#[derive(Debug)]
+pub enum Claim {
+    /// It holds the lock, for as long as this lives.
+    Ours(std::fs::File),
+    /// Another copy holds it: both would paste every dictation.
+    Taken,
+    /// No lock could be made (the folder is read-only, say); dictation goes
+    /// ahead rather than staying off for good.
+    Unchecked,
+}
+
+/// Claims dictation for this copy of the app with a lock on `path`. Copies
+/// opened from the Dock are one app, but a copy run from elsewhere (a build
+/// folder, a second install) is another.
+pub fn claim(path: &Path) -> Claim {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path);
+    let Ok(file) = file else { return Claim::Unchecked };
+    match file.try_lock() {
+        Ok(()) => Claim::Ours(file),
+        Err(std::fs::TryLockError::WouldBlock) => Claim::Taken,
+        Err(std::fs::TryLockError::Error(_)) => Claim::Unchecked,
     }
 }
 
@@ -554,6 +646,31 @@ mod tests {
             .phase(),
             Phase::Paused
         );
+    }
+
+    #[test]
+    fn a_missed_release_needs_the_key_seen_down_first() {
+        let mut seen = false;
+        // A probe that can't see the key (no permission) never stops it.
+        assert!(!missed_release(&mut seen, Some(false)));
+        assert!(!missed_release(&mut seen, None));
+        assert!(!missed_release(&mut seen, Some(true)));
+        assert!(!missed_release(&mut seen, None));
+        assert!(missed_release(&mut seen, Some(false)));
+    }
+
+    #[test]
+    fn one_copy_of_the_app_dictates() {
+        let path = std::env::temp_dir()
+            .join(format!("meeting-transcriber-test-{}", std::process::id()))
+            .join("dictation.lock");
+        let first = claim(&path);
+        assert!(matches!(first, Claim::Ours(_)), "{first:?}");
+        assert!(matches!(claim(&path), Claim::Taken));
+        drop(first);
+        assert!(matches!(claim(&path), Claim::Ours(_)));
+        assert!(matches!(claim(Path::new("/dev/null/x.lock")), Claim::Unchecked));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

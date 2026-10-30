@@ -11,8 +11,8 @@ mod hotkey;
 mod system;
 mod tray;
 
-pub use hotkey::HOTKEY_HINT;
 pub(super) use hotkey::start_hotkey;
+pub use hotkey::{HOTKEY_HINT, hotkey_held};
 pub use system::{
     AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, play_sound,
     set_open_at_login, show_app,

@@ -10,7 +10,7 @@ use eframe::egui;
 
 use super::App;
 use crate::dictation::archive::{self, Clip};
-use crate::dictation::{Dictation, DictationConfig, Engine, Phase, Status, voice2cursor};
+use crate::dictation::{self, Claim, Dictation, DictationConfig, Engine, Phase, Status, voice2cursor};
 use crate::platform::{self, HotkeyWatch, KeyEvent, TrayAction, TrayIcon, TrayMenu};
 use crate::settings::DictationSettings;
 
@@ -19,6 +19,8 @@ const RESCAN_EVERY: Duration = Duration::from_secs(5);
 /// If the window has not closed this long after Quit, the app saves and
 /// exits by itself.
 const QUIT_GRACE: Duration = Duration::from_secs(3);
+/// How often to look for a running voice2cursor.
+const VOICE2CURSOR_EVERY: Duration = Duration::from_secs(3);
 
 /// The recordings folder, listed in the background.
 #[derive(Default)]
@@ -42,8 +44,19 @@ pub(super) struct DictationState {
     /// Why the hotkey can't be watched, until dismissed.
     pub hotkey_error: Option<String>,
     key_events: (Sender<KeyEvent>, Receiver<KeyEvent>),
-    /// voice2cursor was running, so dictation started paused.
+    /// voice2cursor was found running, so dictation was paused.
     pub voice2cursor_banner: bool,
+    /// As last seen by the watcher.
+    voice2cursor_running: bool,
+    /// Asks the watcher for a fresh look.
+    voice2cursor_ask: Sender<()>,
+    voice2cursor_checks: Receiver<voice2cursor::Check>,
+    /// Resume was asked for and waits for that fresh look.
+    resume_wanted: bool,
+    /// Dictation's single-copy lock.
+    claim: Claim,
+    /// Another copy of the app dictates, so this one is paused.
+    pub other_copy_banner: bool,
     /// The engine as last told to the dictation threads.
     engine_key: String,
     /// Why the engine failed to load, until another load starts.
@@ -71,20 +84,29 @@ impl DictationState {
             move || ctx.request_repaint()
         };
         let config = settings.config();
+        let (voice2cursor_ask, voice2cursor_checks) = voice2cursor::watch(VOICE2CURSOR_EVERY, wake.clone());
         let dictation = Dictation::start(config.clone(), wake);
-        // Both would paste every dictation.
-        let voice2cursor = voice2cursor::is_running();
-        dictation.set_paused(voice2cursor);
+        // Both would paste every dictation. voice2cursor is looked for by
+        // the watcher, which pauses dictation when it finds it.
+        let claim = dictation::claim(&crate::models::app_support_dir().join("dictation.lock"));
+        let other_copy = matches!(claim, Claim::Taken);
+        dictation.set_paused(other_copy);
         Self {
             dictation,
             settings,
             pushed: config,
-            paused: voice2cursor,
-            pushed_paused: voice2cursor,
+            paused: other_copy,
+            pushed_paused: other_copy,
             hotkey: None,
             hotkey_error: None,
             key_events: crossbeam_channel::unbounded(),
-            voice2cursor_banner: voice2cursor,
+            voice2cursor_banner: false,
+            voice2cursor_running: false,
+            voice2cursor_ask,
+            voice2cursor_checks,
+            resume_wanted: false,
+            claim,
+            other_copy_banner: other_copy,
             engine_key: String::new(),
             engine_failed: None,
             tray: None,
@@ -158,6 +180,10 @@ impl App {
         });
         match result {
             Ok(watch) => {
+                let probe = watch.clone();
+                self.dict
+                    .dictation
+                    .set_key_probe(move || platform::hotkey_held(probe.key()));
                 self.dict.hotkey = Some(watch);
                 self.dict.hotkey_error = None;
             }
@@ -165,16 +191,45 @@ impl App {
         }
     }
 
-    /// Pauses or resumes. Resuming while voice2cursor still runs keeps it
-    /// paused and says why again.
+    /// Pauses, or resumes once a fresh look finds no voice2cursor (it may
+    /// just have been stopped). Resuming while it runs, or while another
+    /// copy of the app dictates, keeps dictation paused and says why again.
     pub(super) fn set_dictation_paused(&mut self, paused: bool) {
-        if !paused && voice2cursor::is_running() {
-            self.dict.voice2cursor_banner = true;
+        if paused {
+            self.dict.paused = true;
+            self.dict.resume_wanted = false;
             return;
         }
-        self.dict.paused = paused;
-        if !paused {
-            self.dict.voice2cursor_banner = false;
+        if matches!(self.dict.claim, Claim::Taken) {
+            self.dict.claim = dictation::claim(&crate::models::app_support_dir().join("dictation.lock"));
+            if matches!(self.dict.claim, Claim::Taken) {
+                self.dict.other_copy_banner = true;
+                return;
+            }
+            self.dict.other_copy_banner = false;
+        }
+        self.dict.resume_wanted = true;
+        let _ = self.dict.voice2cursor_ask.try_send(());
+    }
+
+    /// Pauses dictation when voice2cursor starts, and finishes a resume.
+    fn poll_voice2cursor(&mut self) {
+        let checks: Vec<voice2cursor::Check> = self.dict.voice2cursor_checks.try_iter().collect();
+        for check in checks {
+            let started = check.running && !self.dict.voice2cursor_running;
+            self.dict.voice2cursor_running = check.running;
+            if started && !self.dict.paused {
+                self.dict.paused = true;
+                self.dict.voice2cursor_banner = true;
+            }
+            if check.asked && std::mem::take(&mut self.dict.resume_wanted) {
+                if check.running {
+                    self.dict.voice2cursor_banner = true;
+                } else {
+                    self.dict.paused = false;
+                    self.dict.voice2cursor_banner = false;
+                }
+            }
         }
     }
 
@@ -182,6 +237,7 @@ impl App {
     pub(super) fn dictation_logic(&mut self, ctx: &egui::Context) {
         self.dict.frames += 1;
         self.make_tray();
+        self.poll_voice2cursor();
         self.poll_key_events();
         self.poll_tray_actions(ctx);
         self.sync_dictation_engine();
@@ -226,6 +282,14 @@ impl App {
         for event in events {
             match event {
                 KeyEvent::Captured(key) => self.dict.settings.hotkey = key.name(),
+                KeyEvent::Stopped => {
+                    self.dict.hotkey = None;
+                    self.dict.hotkey_error = Some(
+                        format!("The dictation hotkey stopped working. {}", platform::HOTKEY_HINT)
+                            .trim()
+                            .to_string(),
+                    );
+                }
                 KeyEvent::CaptureCancelled | KeyEvent::Down | KeyEvent::Up => {}
             }
         }
@@ -334,10 +398,24 @@ impl App {
         }
     }
 
+    /// Dictation's state as the window and the menu bar show it: the
+    /// threads' phase, unless the hotkey can't be watched, which leaves
+    /// a "Ready" dictation deaf.
+    pub(super) fn dictation_state(&self, status: &Status) -> (Phase, String) {
+        let phase = status.phase();
+        if !platform::DICTATION {
+            return (Phase::Paused, "Dictation is not supported here yet".into());
+        }
+        if self.dict.hotkey.is_none() && matches!(phase, Phase::Ready | Phase::Loading | Phase::Error) {
+            return (Phase::Error, "The hotkey can't be watched; see the window".into());
+        }
+        (phase, describe(status, &self.dict.settings.hotkey().label()))
+    }
+
     fn update_tray(&mut self) {
         let Some(tray) = &self.dict.tray else { return };
         let status = self.dict.status();
-        let text = describe(&status, &self.dict.settings.hotkey().label());
+        let (phase, text) = self.dictation_state(&status);
         let menu = TrayMenu {
             status: text.clone(),
             recent: status
@@ -347,11 +425,7 @@ impl App {
                 .collect(),
             paused: self.dict.paused,
         };
-        tray.set(
-            tray_icon(status.phase()),
-            &format!("Meeting Transcriber · {text}"),
-            menu,
-        );
+        tray.set(tray_icon(phase), &format!("Meeting Transcriber · {text}"), menu);
     }
 
     /// Lists the recordings folder again when it changed, a clip finished,

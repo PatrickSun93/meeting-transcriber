@@ -51,8 +51,8 @@ pub use imp::{
 };
 
 pub use dictation_imp::{
-    AUTOSTART, DICTATION, HAS_TRAY, HOTKEY_HINT, PASTE_SHORTCUT, Tray, hide_app, open_at_login, open_hotkey_settings,
-    paste, play_sound, set_open_at_login, show_app,
+    AUTOSTART, DICTATION, HAS_TRAY, HOTKEY_HINT, PASTE_SHORTCUT, Tray, hide_app, hotkey_held, open_at_login,
+    open_hotkey_settings, paste, play_sound, set_open_at_login, show_app,
 };
 
 /// What the hotkey watcher reports.
@@ -66,6 +66,9 @@ pub enum KeyEvent {
     Captured(Hotkey),
     /// Escape was pressed while capturing.
     CaptureCancelled,
+    /// The watcher ended (on macOS, Input Monitoring was switched off) and
+    /// reports nothing more; an `Up` comes first.
+    Stopped,
 }
 
 /// The running hotkey watcher's settings, shared with its thread.

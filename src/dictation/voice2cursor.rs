@@ -2,6 +2,9 @@
 //! with both running every dictation would be pasted twice.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 /// Where to find the script that stops it, for the banner.
 pub const STOP_SCRIPT: &str = "/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh";
@@ -20,6 +23,56 @@ fn lock_path() -> Option<PathBuf> {
 /// process runs it.
 pub fn is_running() -> bool {
     lock_path().is_some_and(|p| lock_is_held(&p)) || process_running()
+}
+
+/// One look for voice2cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Check {
+    pub running: bool,
+    /// The look was asked for (see `watch`), rather than a periodic one.
+    pub asked: bool,
+}
+
+/// Looks for voice2cursor now and then on a thread of its own (it runs
+/// `ps`, too slow for the window's thread), so one started later, by
+/// launchd say, is noticed too. Sending on the returned sender asks for a
+/// look at once. Only asked looks and changes are sent, each followed by
+/// `notify`. The thread ends when the sender or the receiver is dropped.
+pub fn watch(every: Duration, notify: impl Fn() + Send + 'static) -> (Sender<()>, Receiver<Check>) {
+    watch_with(every, is_running, notify)
+}
+
+fn watch_with(
+    every: Duration,
+    look: impl Fn() -> bool + Send + 'static,
+    notify: impl Fn() + Send + 'static,
+) -> (Sender<()>, Receiver<Check>) {
+    let (ask_tx, ask_rx) = crossbeam_channel::bounded(1);
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let spawned = std::thread::Builder::new()
+        .name("voice2cursor-watch".into())
+        .spawn(move || {
+            let (mut asked, mut last) = (false, None);
+            loop {
+                let running = look();
+                if asked || last != Some(running) {
+                    if tx.send(Check { running, asked }).is_err() {
+                        break;
+                    }
+                    notify();
+                }
+                last = Some(running);
+                asked = match ask_rx.recv_timeout(every) {
+                    Ok(()) => true,
+                    Err(RecvTimeoutError::Timeout) => false,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                };
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("could not watch for voice2cursor: {e}");
+    }
+    (ask_tx, rx)
 }
 
 /// True if another process holds an exclusive lock on `path`. Takes and
@@ -113,6 +166,48 @@ mod tests {
         drop(holder);
         assert!(!lock_is_held(&path), "released");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn watcher_sends_changes_and_asked_looks() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let running = Arc::new(AtomicBool::new(false));
+        let r = running.clone();
+        let (ask, checks) = watch_with(Duration::from_millis(5), move || r.load(Ordering::SeqCst), || {});
+        let next = || checks.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            next(),
+            Check {
+                running: false,
+                asked: false
+            },
+            "the first look"
+        );
+        running.store(true, Ordering::SeqCst);
+        assert_eq!(
+            next(),
+            Check {
+                running: true,
+                asked: false
+            },
+            "a change"
+        );
+        // Unchanged periodic looks are not sent; an asked one is.
+        std::thread::sleep(Duration::from_millis(30));
+        ask.send(()).unwrap();
+        assert_eq!(
+            next(),
+            Check {
+                running: true,
+                asked: true
+            }
+        );
+        drop(ask);
+        assert!(
+            checks.recv_timeout(Duration::from_secs(5)).is_err(),
+            "ends with the sender"
+        );
     }
 
     #[test]

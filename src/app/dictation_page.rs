@@ -4,7 +4,6 @@
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 
-use super::dictation::describe;
 use super::sidebar::list_row;
 use super::{App, Folder, LANGUAGES, Page, language_name, platform, theme};
 use crate::dictation::archive::Clip;
@@ -56,6 +55,26 @@ impl App {
             }
             if dismiss {
                 self.dict.voice2cursor_banner = false;
+            }
+        }
+        if self.dict.other_copy_banner {
+            let mut resume = false;
+            let mut dismiss = false;
+            banner(
+                ui,
+                warn,
+                "Another copy of Meeting Transcriber is dictating, so dictation is paused here. \
+                 Quit the other copy, then resume dictation here.",
+                |ui| {
+                    resume = ui.small_button("Resume dictation").clicked();
+                    dismiss = ui.small_button("Dismiss").clicked();
+                },
+            );
+            if resume {
+                self.set_dictation_paused(false);
+            }
+            if dismiss {
+                self.dict.other_copy_banner = false;
             }
         }
         // Where dictation is not supported yet, the Dictation page says so.
@@ -134,17 +153,18 @@ impl App {
     pub(super) fn dictation_page(&mut self, ui: &mut Ui) {
         let status = self.dict.status();
         let key = self.dict.settings.hotkey().label();
+        let (phase, headline) = self.dictation_state(&status);
         theme::card(ui).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let color = match status.phase() {
+                let color = match phase {
                     Phase::Recording => theme::RECORD_RED,
                     Phase::Ready => theme::READY_GREEN,
                     Phase::Error => ui.visuals().warn_fg_color,
                     _ => ui.visuals().weak_text_color(),
                 };
                 ui.label(RichText::new("●").color(color).size(16.0));
-                ui.label(RichText::new(describe(&status, &key)).size(16.0).strong());
+                ui.label(RichText::new(headline).size(16.0).strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let label = if self.dict.paused { "Resume" } else { "Pause" };
                     if ui

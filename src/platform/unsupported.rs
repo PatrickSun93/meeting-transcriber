@@ -6,6 +6,7 @@ use anyhow::{Result, bail};
 use crossbeam_channel::Sender;
 
 use super::{HotkeyWatch, KeyEvent, Sound, TrayAction, TrayIcon, TrayMenu};
+use crate::dictation::hotkey::Hotkey;
 
 const NOT_YET: &str = if cfg!(windows) {
     "is not supported on Windows yet"
@@ -25,6 +26,11 @@ pub const HOTKEY_HINT: &str = "";
 
 pub(super) fn start_hotkey(_watch: HotkeyWatch, _on_event: Box<dyn Fn(KeyEvent) + Send>) -> Result<()> {
     bail!("The dictation hotkey {NOT_YET}.")
+}
+
+/// Whether the hotkey is down right now; None when it can't be asked.
+pub fn hotkey_held(_key: Hotkey) -> Option<bool> {
+    None
 }
 
 /// Pastes into the app in front.
