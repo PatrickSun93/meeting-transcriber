@@ -141,7 +141,7 @@ impl App {
             ),
             Folder::Recordings => (
                 "Recordings folder",
-                "voice2cursor's folder by default, so its recordings are listed too.",
+                "Dictations are saved here as WAV files, each with its text, and listed in the sidebar.",
                 &self.dict.settings.recordings_dir,
             ),
         };

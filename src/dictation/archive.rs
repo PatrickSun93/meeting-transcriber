@@ -1,6 +1,5 @@
 //! The recordings archive: each dictation as a 16 kHz mono WAV with its text
-//! in a `.txt` of the same name. On the Mac it is the folder voice2cursor
-//! used, so the history it built up carries on here.
+//! in a `.txt` of the same name.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,17 +9,9 @@ use chrono::{NaiveDateTime, Timelike as _};
 
 use crate::audio::dsp::SAMPLE_RATE;
 
-/// voice2cursor's folder on the Mac; elsewhere, where voice2cursor never
-/// ran, `Dictation` in the app data folder.
+/// `Dictation` in the app data folder.
 pub fn default_dir() -> PathBuf {
-    if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join(".voice2cursor")
-            .join("recordings")
-    } else {
-        crate::models::app_support_dir().join("Dictation")
-    }
+    crate::models::app_support_dir().join("Dictation")
 }
 
 /// `YYYYMMDD_HHMMSS`, then `_2`, `_3`, … for more clips in the same second
