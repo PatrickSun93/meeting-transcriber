@@ -61,6 +61,9 @@ pub fn unused_path(dir: &Path, stem: &str, ext: &str, current: Option<&Path>) ->
             c.parent() == p.parent()
                 && c.file_name().map(|n| n.to_string_lossy().to_lowercase())
                     == p.file_name().map(|n| n.to_string_lossy().to_lowercase())
+                // Only the same file: on a case-sensitive disk (Linux)
+                // `Sync.md` and `sync.md` are two meetings.
+                && (c == p || same_file(c, p))
         })
     };
     let mut path = dir.join(format!("{stem}.{ext}"));
@@ -70,6 +73,27 @@ pub fn unused_path(dir: &Path, stem: &str, ext: &str, current: Option<&Path>) ->
         n += 1;
     }
     path
+}
+
+/// Whether two existing paths name one file, e.g. the same name in another
+/// case on a case-insensitive disk.
+#[cfg(unix)]
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+/// Whether two existing paths name one file. Windows resolves both to the
+/// name as stored on disk.
+#[cfg(not(unix))]
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// The start time in a file name: `2026-10-29 14-05 …` or the old
@@ -268,6 +292,24 @@ mod tests {
         );
         // Other extensions do not collide.
         assert_eq!(unused_path(&dir, stem, "txt", None), dir.join(format!("{stem}.txt")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_meeting_differing_in_case_is_not_overwritten() {
+        let dir = temp_dir("case");
+        let renamed = dir.join("2026-10-29 14-05 Sync.md");
+        let other = dir.join("2026-10-29 14-05 sync.md");
+        std::fs::write(&renamed, "renamed").unwrap();
+        std::fs::write(&other, "other").unwrap();
+        let to = unused_path(&dir, "2026-10-29 14-05 sync", "md", Some(&renamed));
+        if std::fs::read_to_string(&renamed).unwrap() == "renamed" {
+            // A case-sensitive disk holds both: the other one is taken.
+            assert_eq!(to, dir.join("2026-10-29 14-05 sync (2).md"));
+        } else {
+            // Case-insensitive: one file, so a case-only rename.
+            assert_eq!(to, other);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
