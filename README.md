@@ -62,6 +62,8 @@ Dictation needs two more, both in **System Settings → Privacy & Security**:
 - **Input Monitoring**: to see the hotkey from any app. Without it the app shows a banner with **Open System Settings** and **Try again**; everything else keeps working.
 - **Accessibility**: to press ⌘V for you. Without it the text is still copied to the clipboard.
 
+The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `./scripts/bundle-macos.sh --install`, switch Input Monitoring and Accessibility (like the other two) off and on again for **Meeting Transcriber**, then quit and reopen it.
+
 ## Windows and Linux
 
 The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *Others*, the meeting library, notes, the reader and Settings. What differs:
@@ -202,6 +204,10 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 - **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name. On the Mac they go to `~/.voice2cursor/recordings`, voice2cursor's folder, so its earlier recordings are listed too; on Windows and Linux to `Dictation` in the app data folder (see [Windows and Linux](#windows-and-linux)). The folder can be changed in Settings.
 - **voice2cursor** (Mac): if it is running (it listens for the same key), dictation pauses and says so, also when it starts later. Stop it with `/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh`, then press **Resume dictation**. A second copy of Meeting Transcriber (one run from a build folder, say) also stays paused while the first one dictates.
 - **Ollama** (off by default): a local model fixes punctuation and Chinese/English spacing, with voice2cursor's prompt. If Ollama fails or is slow, the text is pasted as Whisper wrote it.
+- **Moving over from voice2cursor** (Mac):
+  1. Stop it: `/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh`. This only stops it until the next login.
+  2. In Meeting Transcriber, press **Resume dictation** if it paused, and dictate for a while. Its earlier recordings are already in the **Dictation** tab.
+  3. Once you are happy, remove it for good: `/Volumes/externalssd/devitems/tools/voice2cursor/uninstall.sh`. It removes its login item and state but keeps `~/.voice2cursor/recordings`, which Meeting Transcriber keeps using. Then switch on **Open at login** here.
 - **Open at login** (Settings): on the Mac it adds `~/Library/LaunchAgents/com.patricksun.meeting-transcriber.plist`, which opens `/Applications/Meeting Transcriber.app` in the menu bar when you log in. Switching it off removes the file. Nothing is set up until you switch it on.
 
 ### Windows
