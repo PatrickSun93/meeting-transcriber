@@ -36,7 +36,7 @@ already have: https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
 If Me stays silent, allow microphone access in Settings > Privacy & security >
 Microphone, including "Let desktop apps access your microphone".
 
-More: https://github.com/PatrickSun93/teams-meeting-plugin#windows
+More: https://github.com/PatrickSun93/meeting-transcriber#windows
 '@ | Set-Content -Encoding UTF8 (Join-Path $stage 'README.txt')
 
 Compress-Archive -Path $stage -DestinationPath $zip

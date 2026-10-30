@@ -37,8 +37,8 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 2. Build the app and copy it to Applications:
 
    ```bash
-   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
-   cd teams-meeting-plugin
+   git clone https://github.com/PatrickSun93/meeting-transcriber.git
+   cd meeting-transcriber
    ./scripts/bundle-macos.sh --install
    ```
 
@@ -84,7 +84,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
-**Download:** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/teams-meeting-plugin/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+**Download:** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
 
 To build it yourself instead:
 
@@ -100,8 +100,8 @@ To build it yourself instead:
 2. Build it (the first build compiles whisper.cpp and takes a few minutes):
 
    ```powershell
-   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
-   cd teams-meeting-plugin
+   git clone https://github.com/PatrickSun93/meeting-transcriber.git
+   cd meeting-transcriber
    cargo build --release
    ```
 
@@ -137,8 +137,8 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
 2. Build and install it for your user (the program goes to `~/.local/bin`, a launcher to the app menu):
 
    ```bash
-   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
-   cd teams-meeting-plugin
+   git clone https://github.com/PatrickSun93/meeting-transcriber.git
+   cd meeting-transcriber
    ./scripts/install-linux.sh
    ```
 
@@ -284,7 +284,7 @@ cargo clippy --all-targets
 cargo run --release
 ```
 
-To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages to a new [GitHub release](https://github.com/PatrickSun93/teams-meeting-plugin/releases):
+To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages to a new [GitHub release](https://github.com/PatrickSun93/meeting-transcriber/releases):
 
 ```bash
 git tag v0.2.0

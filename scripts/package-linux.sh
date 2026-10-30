@@ -36,7 +36,7 @@ Meeting Transcriber for Linux
 
 Recording Others needs parec: package pulseaudio-utils (libpulse on Arch).
 It works with PipeWire too. zenity or kdialog shows the folder dialog.
-More: https://github.com/PatrickSun93/teams-meeting-plugin#linux
+More: https://github.com/PatrickSun93/meeting-transcriber#linux
 README
 
 tar -C "$out" -czf "$out/$name.tar.gz" "$name"
