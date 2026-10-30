@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use crossbeam_channel::{RecvTimeoutError, Sender};
 
-use super::decode_f32le;
+use super::{decode_f32le, parec_args};
 use crate::audio::dsp::SAMPLE_RATE;
 use crate::audio::silence::{Paced, TICK};
 use crate::audio::{AudioPacket, Capture, Converter};
@@ -46,16 +46,7 @@ impl Drop for ParecGuard {
 
 pub fn start(tx: Sender<AudioPacket>) -> Result<Capture> {
     let mut child = Command::new("parec")
-        .args([
-            // The monitor of whatever output is the default right now.
-            "--device=@DEFAULT_MONITOR@",
-            "--format=float32le",
-            "--channels=1",
-            "--latency-msec=50",
-            "--client-name=Meeting Transcriber",
-            "--stream-name=Others",
-        ])
-        .arg(format!("--rate={SAMPLE_RATE}"))
+        .args(parec_args(SAMPLE_RATE))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -65,7 +65,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
 | Whisper runs on | the GPU (Metal) | the processor, or the GPU with `--features vulkan` / `cuda` | the same as Windows |
 | Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%LOCALAPPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
-| Folder dialog, file manager | Finder | Explorer | zenity or kdialog; the file manager over D-Bus, else `xdg-open` |
+| Folder dialog, file manager | Finder | Explorer | zenity or kdialog (else you type the path); the file manager over D-Bus, else `xdg-open` |
 
 On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If the status line shows more than "1× real time", pick **Small** or **Base** in Settings, or build with a GPU backend.
 
@@ -90,7 +90,9 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
    cargo build --release
    ```
 
-3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. On another PC it needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. CI also builds it on every push (artifact *Meeting-Transcriber-Windows-x86_64*).
+3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. On another PC it needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have.
+
+   To hand it to someone else, `.\scripts\package-windows.ps1` builds it and zips it with a short README into `target\release\package\Meeting-Transcriber-Windows-x86_64.zip` (extra arguments such as `--features vulkan` go to the build). CI does the same on every push (artifact *Meeting-Transcriber-Windows-x86_64*), so you can also download a ready-built zip from the Actions page and skip steps 1 and 2.
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
@@ -104,7 +106,7 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
 
    ```bash
    # Debian, Ubuntu
-   sudo apt install build-essential cmake clang libasound2-dev pulseaudio-utils zenity
+   sudo apt install build-essential cmake clang libclang-dev libasound2-dev pulseaudio-utils zenity
    # Fedora
    sudo dnf install gcc-c++ cmake clang-devel alsa-lib-devel pulseaudio-utils zenity
    # Arch
@@ -115,7 +117,7 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
-   `pulseaudio-utils` (`libpulse` on Arch) provides `parec`, which records *Others*; it works with PipeWire as well. `zenity` (or KDE's `kdialog`) shows the folder dialog.
+   `pulseaudio-utils` (`libpulse` on Arch) provides `parec`, which records *Others*; it works with PipeWire as well. `zenity` (or KDE's `kdialog`) shows the folder dialog; without either, the app asks you to type the folder's path instead.
 
 2. Build and install it for your user (the program goes to `~/.local/bin`, a launcher to the app menu):
 
@@ -128,6 +130,8 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
    Or just run it from the checkout with `cargo run --release`. For the GPU, add `--features vulkan` (needs the Vulkan headers and `glslc`, e.g. `libvulkan-dev glslc`) or `--features cuda`.
 
 3. Open **Meeting Transcriber** from the app menu. It runs on X11 and Wayland.
+
+To hand it to someone else, `./scripts/package-linux.sh` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program, its launcher and icon, and `install.sh`. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
 
 ## Using it
 
@@ -214,7 +218,7 @@ MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav ca
 
 `MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is the `models` folder in the app data folder (see [Windows and Linux](#windows-and-linux) for where that is).
 
-CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and builds it on Windows and Linux, and attaches the Windows `.exe` and the Linux binary.
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and packages it on Windows and Linux, and attaches the Windows `.zip` and the Linux `.tar.gz`.
 
 | File | Role |
 | --- | --- |
@@ -231,6 +235,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/app/reader.rs` | Transcript reader: filter, find, copy |
 | `src/app/library.rs` | Open meeting: autosave, rename, delete, convert, export |
 | `src/app/settings_page.rs` | Models, folders, recognition options |
+| `src/app/path_prompt.rs` | Typing a folder's path when there is no folder dialog |
 | `src/app/sidebar.rs` | New meeting, search, meeting list, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
 | `src/platform/` | What differs per system: file manager, folder dialog, wording, console (macOS, Windows, Linux) |
@@ -239,6 +244,8 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |
 | `src/meetings.rs` | Meetings folder: file names, listing, search, date groups |
 | `src/wav.rs` | Offline mode for WAV files |
+| `scripts/` | macOS `.app` bundle, Linux install and `.tar.gz`, Windows `.zip` |
+| `assets/` | Linux launcher (`.desktop`) and icon |
 
 ## License
 

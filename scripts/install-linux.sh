@@ -1,38 +1,45 @@
 #!/usr/bin/env bash
-# Builds Meeting Transcriber and installs it for the current user on Linux:
-# the program in ~/.local/bin and a launcher in the app menu.
+# Installs Meeting Transcriber for the current user on Linux: the program in
+# ~/.local/bin, a launcher in the app menu and its icon.
 #
+# From a checkout it builds first; extra arguments go to `cargo build --release`:
 #   ./scripts/install-linux.sh                     # Whisper on the processor
 #   ./scripts/install-linux.sh --features vulkan   # or on the graphics card
 #
-# Extra arguments go to `cargo build --release`.
+# The release tar.gz (scripts/package-linux.sh) ships this script as
+# install.sh next to a ready-built program, which it installs as is.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
-
-cargo build --release "$@"
+here="$(cd "$(dirname "$0")" && pwd)"
+if [[ -x "$here/meeting-transcriber" && -f "$here/meeting-transcriber.desktop" ]]; then
+    program="$here/meeting-transcriber"
+    assets="$here"
+else
+    cd "$here/.."
+    cargo build --release "$@"
+    program="${CARGO_TARGET_DIR:-$PWD/target}/release/meeting-transcriber"
+    assets="$PWD/assets"
+fi
 
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
-apps_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-mkdir -p "$bin_dir" "$apps_dir"
-install -m 755 target/release/meeting-transcriber "$bin_dir/meeting-transcriber"
-
-# StartupWMClass matches the window's app id, so the launcher and the
-# window share one icon in the dock.
-cat > "$apps_dir/meeting-transcriber.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=Meeting Transcriber
-Comment=Live meeting transcription with a local Whisper model
-Exec="$bin_dir/meeting-transcriber"
-Icon=audio-input-microphone
-Terminal=false
-Categories=AudioVideo;Audio;Office;
-StartupWMClass=meeting-transcriber
-DESKTOP
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
+apps_dir="$data_dir/applications"
+icons_dir="$data_dir/icons/hicolor/scalable/apps"
+mkdir -p "$bin_dir" "$apps_dir" "$icons_dir"
+install -m 755 "$program" "$bin_dir/meeting-transcriber"
+install -m 644 "$assets/meeting-transcriber.svg" "$icons_dir/meeting-transcriber.svg"
+# The full path, since ~/.local/bin is not on every desktop session's PATH.
+sed "s|^Exec=.*|Exec=\"$bin_dir/meeting-transcriber\"|" "$assets/meeting-transcriber.desktop" \
+    > "$apps_dir/meeting-transcriber.desktop"
+# Menus pick up the new icon without logging out (where the tools exist).
+gtk-update-icon-cache -q -t "$data_dir/icons/hicolor" 2>/dev/null || true
+update-desktop-database -q "$apps_dir" 2>/dev/null || true
 
 echo "Installed $bin_dir/meeting-transcriber"
 echo "Open Meeting Transcriber from the app menu, or run: meeting-transcriber"
 if ! command -v parec >/dev/null 2>&1; then
     echo "Note: recording Others needs parec (package pulseaudio-utils; libpulse on Arch)."
+fi
+if ! command -v zenity >/dev/null 2>&1 && ! command -v kdialog >/dev/null 2>&1; then
+    echo "Note: without zenity or kdialog, folders are typed in instead of chosen in a dialog."
 fi

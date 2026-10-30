@@ -1,16 +1,18 @@
 //! Linux and the BSDs: the desktop's file manager (over D-Bus, else
 //! xdg-open) and zenity or kdialog for the folder dialog.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-use super::{file_uri, picked_path, spawn};
+use super::{Picked, file_uri, picked_path, spawn};
 
 pub const SHOW_IN_FILES: &str = "Show in folder";
 pub const THIS_COMPUTER: &str = "this computer";
 /// What the Others source records.
 pub const SYSTEM_AUDIO: &str = "computer audio";
 pub const NO_MIC_HINT: &str = "Check the input device in your sound settings";
+/// Shown above the path field that stands in for a folder dialog.
+pub const NO_DIALOG_HINT: &str = "No folder dialog is installed (zenity or kdialog), so type the folder's path.";
 pub const MIC_ACCESS_HINT: &str = "Check that the input device is not muted in your sound settings";
 
 /// Selects `path` in the file manager through the freedesktop
@@ -46,8 +48,9 @@ pub fn open_folder(dir: &Path) {
     spawn(Command::new("xdg-open").arg(dir));
 }
 
-/// zenity (GNOME and most others), else kdialog (KDE).
-pub(super) fn run_picker(prompt: &str, start: &Path) -> Option<PathBuf> {
+/// zenity (GNOME and most others), else kdialog (KDE). With neither, the
+/// window asks for the path as text.
+pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
     // A trailing separator makes zenity open inside the folder.
     let mut start_arg = start.as_os_str().to_owned();
     start_arg.push("/");
@@ -58,12 +61,15 @@ pub(super) fn run_picker(prompt: &str, start: &Path) -> Option<PathBuf> {
     let out = match zenity {
         Ok(out) => out,
         // Not installed: try KDE's dialog.
-        Err(_) => Command::new("kdialog")
+        Err(_) => match Command::new("kdialog")
             .arg("--getexistingdirectory")
             .arg(start)
             .args(["--title", prompt])
             .output()
-            .ok()?,
+        {
+            Ok(out) => out,
+            Err(_) => return Picked::NoDialog,
+        },
     };
     picked_path(out)
 }

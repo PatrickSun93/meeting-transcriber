@@ -27,14 +27,26 @@ use windows as imp;
 
 #[cfg(windows)]
 pub use imp::attach_console;
-pub use imp::{MIC_ACCESS_HINT, NO_MIC_HINT, SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, open_folder, reveal};
+pub use imp::{
+    MIC_ACCESS_HINT, NO_DIALOG_HINT, NO_MIC_HINT, SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, open_folder, reveal,
+};
 
 /// How find-in-transcript is reached from the keyboard.
 pub const FIND_SHORTCUT: &str = if cfg!(target_os = "macos") { "⌘F" } else { "Ctrl+F" };
 
+/// What a folder dialog came back with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Picked {
+    Folder(PathBuf),
+    Cancelled,
+    /// There is no dialog to show (on Linux, neither zenity nor kdialog is
+    /// installed), so the caller asks for the path as text instead.
+    NoDialog,
+}
+
 /// Shows the native "choose folder" dialog on a background thread, so the
-/// window keeps drawing. Receives None if the user cancels.
-pub fn pick_folder(prompt: &str, start: &Path, notify: impl Fn() + Send + 'static) -> Receiver<Option<PathBuf>> {
+/// window keeps drawing.
+pub fn pick_folder(prompt: &str, start: &Path, notify: impl Fn() + Send + 'static) -> Receiver<Picked> {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let (prompt, start) = (prompt.to_string(), start.to_path_buf());
     std::thread::spawn(move || {
@@ -53,15 +65,19 @@ fn spawn(command: &mut Command) {
 }
 
 /// The folder a dialog printed. Cancel exits with an error or prints nothing.
-#[cfg(not(target_os = "macos"))]
-fn picked_path(out: std::process::Output) -> Option<PathBuf> {
+#[cfg(any(not(target_os = "macos"), test))]
+fn picked_path(out: std::process::Output) -> Picked {
     if !out.status.success() {
-        return None;
+        return Picked::Cancelled;
     }
     let path = String::from_utf8_lossy(&out.stdout)
         .trim_end_matches(['\r', '\n'])
         .to_string();
-    (!path.is_empty()).then(|| PathBuf::from(path))
+    if path.is_empty() {
+        Picked::Cancelled
+    } else {
+        Picked::Folder(PathBuf::from(path))
+    }
 }
 
 /// AppleScript for the macOS dialog, starting in `start` when it exists.
@@ -159,6 +175,29 @@ mod tests {
             PathBuf::from(r"C:\Users\me\Models\old")
         );
         assert_eq!(backslashed(Path::new("D:/Models")), PathBuf::from(r"D:\Models"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dialog_output_becomes_a_folder_or_a_cancel() {
+        use std::os::unix::process::ExitStatusExt as _;
+        let output = |code: i32, stdout: &str| std::process::Output {
+            // A wait status: the exit code sits in the second byte.
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(
+            picked_path(output(0, "/home/me/My Meetings\n")),
+            Picked::Folder(PathBuf::from("/home/me/My Meetings"))
+        );
+        assert_eq!(
+            picked_path(output(0, "C:\\Users\\me\r\n")),
+            Picked::Folder(PathBuf::from("C:\\Users\\me"))
+        );
+        // zenity and kdialog exit with 1 on Cancel.
+        assert_eq!(picked_path(output(1, "")), Picked::Cancelled);
+        assert_eq!(picked_path(output(0, "")), Picked::Cancelled);
     }
 
     #[cfg(unix)]

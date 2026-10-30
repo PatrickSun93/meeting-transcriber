@@ -3,6 +3,7 @@
 
 mod library;
 mod meeting_page;
+mod path_prompt;
 mod reader;
 mod settings_page;
 mod sidebar;
@@ -24,6 +25,7 @@ use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
+use path_prompt::{PathPrompt, PromptFor};
 use reader::Reader;
 
 /// How long quitting waits for speech that was still being transcribed.
@@ -91,7 +93,7 @@ struct Download {
 /// The native folder dialog, open on a background thread.
 struct FolderPick {
     folder: Folder,
-    result: Receiver<Option<PathBuf>>,
+    result: Receiver<platform::Picked>,
 }
 
 /// A new models folder was chosen while the old one still holds models.
@@ -151,6 +153,8 @@ pub struct App {
     /// The model whose Delete button was pressed once, awaiting confirmation.
     confirm_delete: Option<ModelInfo>,
     folder_pick: Option<FolderPick>,
+    /// Asks for a folder as text when there is no folder dialog.
+    path_prompt: Option<PathPrompt>,
     move_offer: Option<MoveOffer>,
     model_move: Option<ModelMove>,
 }
@@ -208,6 +212,7 @@ impl App {
             saved_settings: settings,
             confirm_delete: None,
             folder_pick: None,
+            path_prompt: None,
             move_offer: None,
             model_move: None,
         };
@@ -348,11 +353,15 @@ impl App {
         settings::expand_dir(&self.meetings_dir).unwrap_or_else(crate::meetings::default_dir)
     }
 
-    fn pick_folder(&mut self, folder: Folder) {
-        let prompt = match folder {
+    fn folder_prompt(folder: Folder) -> &'static str {
+        match folder {
             Folder::Models => "Choose a folder for Whisper models",
             Folder::Meetings => "Choose a folder for meeting transcripts",
-        };
+        }
+    }
+
+    fn pick_folder(&mut self, folder: Folder) {
+        let prompt = Self::folder_prompt(folder);
         let ctx = self.ctx.clone();
         let result = platform::pick_folder(prompt, &self.folder_path(folder), move || ctx.request_repaint());
         self.folder_pick = Some(FolderPick { folder, result });
@@ -525,9 +534,8 @@ impl App {
         {
             let folder = pick.folder;
             self.folder_pick = None;
-            if let Some(path) = chosen {
-                self.set_folder(folder, path.to_string_lossy().into_owned());
-            }
+            let start = self.folder_path(folder);
+            self.picked(PromptFor::Folder(folder), Self::folder_prompt(folder), &start, chosen);
         }
 
         if let Some(m) = &self.model_move
@@ -725,6 +733,8 @@ impl eframe::App for App {
                     Page::Settings => self.settings_page(ui),
                 }
             });
+
+        self.path_prompt_dialog(ui.ctx());
 
         if self.recording() {
             // Keep the meters and clock moving.

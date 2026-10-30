@@ -29,6 +29,26 @@ pub fn start_system_audio(tx: Sender<AudioPacket>) -> Result<Capture> {
     linux::start(tx)
 }
 
+/// parec's arguments: raw mono f32 samples at `rate` from the monitor of
+/// whatever output is the default right now, so switching speakers between
+/// meetings needs no setting.
+#[cfg(any(not(any(target_os = "macos", windows)), test))]
+fn parec_args(rate: u32) -> Vec<String> {
+    [
+        "--device=@DEFAULT_MONITOR@",
+        "--raw",
+        "--format=float32le",
+        "--channels=1",
+        "--latency-msec=50",
+        "--client-name=Meeting Transcriber",
+        "--stream-name=Others",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .chain([format!("--rate={rate}")])
+    .collect()
+}
+
 /// Turns a byte stream of little-endian f32 samples into samples. A read
 /// can end inside a sample; those bytes wait in `carry` for the next one.
 #[cfg(any(not(any(target_os = "macos", windows)), test))]
@@ -43,6 +63,22 @@ fn decode_f32le(carry: &mut Vec<u8>, bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parec_records_the_default_monitor_as_raw_mono_floats() {
+        let args = parec_args(16_000);
+        for want in [
+            "--device=@DEFAULT_MONITOR@",
+            "--raw",
+            "--format=float32le",
+            "--channels=1",
+            "--rate=16000",
+        ] {
+            assert!(args.iter().any(|a| a == want), "missing {want} in {args:?}");
+        }
+        // One argument each: parec sees "Meeting Transcriber" whole.
+        assert!(args.contains(&"--client-name=Meeting Transcriber".to_string()));
+    }
 
     #[test]
     fn samples_split_across_reads_are_joined() {

@@ -11,6 +11,7 @@ use anyhow::Context as _;
 use crossbeam_channel::Receiver;
 use eframe::egui;
 
+use super::path_prompt::PromptFor;
 use super::{App, Page, platform};
 use crate::meeting::{self, Meeting};
 use crate::meetings::{self, Kind, Library};
@@ -122,7 +123,7 @@ impl Format {
 /// The folder dialog for an export, open on a background thread.
 pub(super) struct ExportPick {
     format: Format,
-    result: Receiver<Option<PathBuf>>,
+    result: Receiver<platform::Picked>,
 }
 
 /// A short message in the footer, optionally with a file to show.
@@ -445,13 +446,15 @@ impl App {
             .map_or_else(|| self.meetings_dir_path(), Path::to_path_buf)
     }
 
+    fn export_prompt(format: Format) -> String {
+        format!("Export the meeting as .{}", format.extension())
+    }
+
     pub(super) fn pick_export_folder(&mut self, format: Format) {
         let ctx = self.ctx.clone();
-        let result = platform::pick_folder(
-            &format!("Export the meeting as .{}", format.extension()),
-            &self.open_meeting_dir(),
-            move || ctx.request_repaint(),
-        );
+        let result = platform::pick_folder(&Self::export_prompt(format), &self.open_meeting_dir(), move || {
+            ctx.request_repaint()
+        });
         self.export_pick = Some(ExportPick { format, result });
     }
 
@@ -465,9 +468,8 @@ impl App {
         {
             let format = pick.format;
             self.export_pick = None;
-            if let Some(dir) = chosen {
-                self.export_to(format, &dir);
-            }
+            let start = self.open_meeting_dir();
+            self.picked(PromptFor::Export(format), &Self::export_prompt(format), &start, chosen);
         }
     }
 
