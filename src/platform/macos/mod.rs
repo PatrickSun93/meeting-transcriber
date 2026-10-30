@@ -1,9 +1,23 @@
-//! macOS: Finder and an AppleScript folder dialog.
+//! macOS: Finder and an AppleScript folder dialog; for dictation, the
+//! hotkey (`hotkey.rs`), the menu bar item (`tray.rs`) and the rest of what
+//! it needs from the system (`system.rs`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::{Picked, choose_folder_script, spawn};
+
+mod hotkey;
+mod system;
+mod tray;
+
+pub use hotkey::HOTKEY_HINT;
+pub(super) use hotkey::start_hotkey;
+pub use system::{
+    AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, play_sound,
+    set_open_at_login, show_app,
+};
+pub use tray::Tray;
 
 pub const SHOW_IN_FILES: &str = "Show in Finder";
 pub const THIS_COMPUTER: &str = "this Mac";
@@ -17,6 +31,12 @@ pub const MIC_ACCESS_HINT: &str = "Allow microphone access in System Settings > 
 /// Selects `path` in Finder.
 pub fn reveal(path: &Path) {
     spawn(Command::new("open").arg("-R").arg(path));
+}
+
+/// Opens a file in its app (a recording in QuickTime Player, or whatever
+/// plays audio here).
+pub fn open_file(path: &Path) {
+    spawn(Command::new("open").arg(path));
 }
 
 /// Opens a folder in Finder, creating it first so there is something to show.

@@ -1,12 +1,12 @@
-//! The sidebar: a New meeting button, search, the meetings grouped by day,
-//! and Settings pinned to the bottom.
+//! The sidebar: Meetings or Dictation, search, the meetings (or dictations)
+//! grouped by day, and Settings pinned to the bottom.
 
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Galley, Key, Response, RichText, Sense, Ui, Vec2,
     text::{LayoutJob, TextWrapping},
 };
 
-use super::{App, Page, platform, theme};
+use super::{App, Page, SidebarTab, platform, theme};
 use crate::meetings::{self, Entry, Kind};
 
 /// What a row asked for; applied after the list is drawn.
@@ -24,23 +24,32 @@ impl App {
     pub(super) fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(2.0);
         ui.label(RichText::new("Meeting Transcriber").size(15.5).strong());
-        ui.add_space(12.0);
+        ui.add_space(10.0);
+        self.tab_switch(ui);
+        ui.add_space(8.0);
 
-        let recording = self.recording();
-        let new = egui::Button::new(RichText::new("＋  New meeting").strong())
-            .min_size(Vec2::new(ui.available_width(), 32.0))
-            .corner_radius(8);
-        if ui
-            .add_enabled(!recording, new)
-            .on_disabled_hover_text("Stop recording to start another meeting.")
-            .clicked()
-        {
-            self.new_meeting();
+        let dictation = self.sidebar_tab == SidebarTab::Dictation;
+        if !dictation {
+            let recording = self.recording();
+            let new = egui::Button::new(RichText::new("＋  New meeting").strong())
+                .min_size(Vec2::new(ui.available_width(), 32.0))
+                .corner_radius(8);
+            if ui
+                .add_enabled(!recording, new)
+                .on_disabled_hover_text("Stop recording to start another meeting.")
+                .clicked()
+            {
+                self.new_meeting();
+            }
+            ui.add_space(6.0);
         }
-        ui.add_space(6.0);
         ui.add(
             egui::TextEdit::singleline(&mut self.list.search)
-                .hint_text("🔍  Search titles and #tags")
+                .hint_text(if dictation {
+                    "🔍  Search dictations"
+                } else {
+                    "🔍  Search titles and #tags"
+                })
                 .desired_width(f32::INFINITY),
         );
         ui.add_space(6.0);
@@ -56,9 +65,47 @@ impl App {
                 }
             });
         egui::ScrollArea::vertical()
-            .id_salt("meeting_list")
+            .id_salt(if dictation { "dictation_list" } else { "meeting_list" })
             .auto_shrink(false)
-            .show(ui, |ui| self.meeting_list(ui));
+            .show(ui, |ui| {
+                if dictation {
+                    self.dictation_list(ui);
+                } else {
+                    self.meeting_list(ui);
+                }
+            });
+    }
+
+    /// Meetings | Dictation, as two halves of one control.
+    fn tab_switch(&mut self, ui: &mut Ui) {
+        let width = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+        ui.horizontal(|ui| {
+            for (tab, label, page) in [
+                (SidebarTab::Meetings, "Meetings", Page::Meeting),
+                (SidebarTab::Dictation, "Dictation", Page::Dictation),
+            ] {
+                let selected = self.sidebar_tab == tab;
+                let mut text = RichText::new(label).size(13.5);
+                if selected {
+                    text = text.strong().color(theme::accent(ui));
+                }
+                let button = egui::Button::new(text)
+                    .fill(if selected {
+                        theme::accent(ui).gamma_multiply(0.18)
+                    } else {
+                        Color32::TRANSPARENT
+                    })
+                    .min_size(Vec2::new(width, 28.0))
+                    .corner_radius(7);
+                if ui.add(button).clicked() {
+                    if !selected {
+                        self.sidebar_tab = tab;
+                        self.list.search.clear();
+                    }
+                    self.page = page;
+                }
+            }
+        });
     }
 
     fn meeting_list(&mut self, ui: &mut Ui) {
@@ -70,7 +117,7 @@ impl App {
         if self.open.path.is_none() && query.is_empty() {
             let title = self.open.meeting.title.clone();
             let dot = recording.then_some(theme::RECORD_RED);
-            if meeting_row(ui, &title, "Not saved yet", false, on_meeting_page, dot, true).clicked() {
+            if list_row(ui, &title, "Not saved yet", false, on_meeting_page, dot, true).clicked() {
                 self.page = Page::Meeting;
             }
             ui.add_space(4.0);
@@ -125,7 +172,7 @@ impl App {
         // While recording, only the meeting being recorded can be shown.
         let enabled = !recording || is_open;
         let dot = (recording && is_open).then_some(theme::RECORD_RED);
-        let response = meeting_row(
+        let response = list_row(
             ui,
             &entry.title,
             &detail,
@@ -246,8 +293,9 @@ fn confirm_delete(ui: &mut Ui, entry: &Entry) -> Option<RowAction> {
     action
 }
 
-/// A meeting in the list: its title on one line, time and tags below.
-fn meeting_row(
+/// A meeting (or a dictation) in the list: its title on one line, time
+/// and tags below.
+pub(super) fn list_row(
     ui: &mut Ui,
     title: &str,
     detail: &str,

@@ -8,6 +8,8 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+# Already built for egui's clipboard; dictation copies from its own threads.
+arboard = { version = "3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cpal = "0.18"
 crossbeam-channel = "0.5"
@@ -26,6 +28,30 @@ cuda = ["whisper-rs/cuda"]
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = "11"
 whisper-rs = { version = "0.16", features = ["metal"] }
+# Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item (AppKit).
+# All already built for winit and eframe.
+core-foundation = "0.9"
+core-graphics = "0.23"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSButton",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
 
 # The Explorer folder dialog (COM). Already built for cpal's WASAPI backend.
 [target.'cfg(windows)'.dependencies]

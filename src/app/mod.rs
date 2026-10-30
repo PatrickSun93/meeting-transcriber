@@ -1,6 +1,8 @@
 //! The native window (egui): app state, background work, and the frame loop.
 //! Pages live in their own modules.
 
+mod dictation;
+mod dictation_page;
 mod library;
 mod meeting_page;
 mod path_prompt;
@@ -24,6 +26,7 @@ use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
+use dictation::DictationState;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
 use path_prompt::{PathPrompt, PromptFor};
 use reader::Reader;
@@ -66,7 +69,15 @@ fn format_size(bytes: u64) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Meeting,
+    Dictation,
     Settings,
+}
+
+/// What the sidebar lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarTab {
+    Meetings,
+    Dictation,
 }
 
 /// The folders that can be chosen in Settings.
@@ -74,6 +85,7 @@ enum Page {
 enum Folder {
     Models,
     Meetings,
+    Recordings,
 }
 
 struct Engine {
@@ -157,10 +169,14 @@ pub struct App {
     path_prompt: Option<PathPrompt>,
     move_offer: Option<MoveOffer>,
     model_move: Option<ModelMove>,
+    sidebar_tab: SidebarTab,
+    dict: DictationState,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    /// `start_hidden`: opened at login; the window hides once the menu bar
+    /// item is there.
+    pub fn new(cc: &eframe::CreationContext<'_>, start_hidden: bool) -> Self {
         theme::apply(&cc.egui_ctx);
         let settings = Settings::load();
         models::set_configured_dir(settings.models_dir_path());
@@ -180,6 +196,7 @@ impl App {
         }
         let mut transcript = Transcript::default();
         transcript.echo.enabled = settings.remove_echo;
+        let dict = DictationState::new(settings.dictation.clone(), &cc.egui_ctx, start_hidden);
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
             page: Page::Meeting,
@@ -215,11 +232,14 @@ impl App {
             path_prompt: None,
             move_offer: None,
             model_move: None,
+            sidebar_tab: SidebarTab::Meetings,
+            dict,
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
         }
         app.ensure_engine();
+        app.start_hotkey();
         app
     }
 
@@ -238,6 +258,7 @@ impl App {
             return;
         }
         self.retire_engine();
+        self.dict.engine_failed = None;
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let (out_tx, out_rx) = crossbeam_channel::unbounded();
         let path = self.model.path();
@@ -261,6 +282,7 @@ impl App {
     /// being read until then. Stopping a meeting and switching models (or
     /// folders) right away would otherwise lose the last lines.
     fn retire_engine(&mut self) {
+        self.forget_dictation_engine();
         if let Some(Engine { outputs, ready, .. }) = self.engine.take()
             && ready
         {
@@ -346,6 +368,7 @@ impl App {
         match folder {
             Folder::Models => models::configured_dir(),
             Folder::Meetings => self.meetings_dir_path(),
+            Folder::Recordings => self.dict.settings.recordings_dir_path(),
         }
     }
 
@@ -357,6 +380,7 @@ impl App {
         match folder {
             Folder::Models => "Choose a folder for Whisper models",
             Folder::Meetings => "Choose a folder for meeting transcripts",
+            Folder::Recordings => "Choose a folder for dictation recordings",
         }
     }
 
@@ -372,6 +396,7 @@ impl App {
     fn set_folder(&mut self, folder: Folder, setting: String) {
         match folder {
             Folder::Meetings => self.meetings_dir = setting,
+            Folder::Recordings => self.dict.settings.recordings_dir = setting,
             // A running download writes into the current folder, so it would
             // end up left behind. The buttons are disabled meanwhile, but the
             // folder dialog may have been opened before the download started.
@@ -479,7 +504,7 @@ impl App {
             time_offset,
             first_utterance: self.next_utterance,
             language: self.language.map(str::to_string),
-            mute_me: Default::default(),
+            mute_me: self.dict.dictation.mute_me(),
         };
         let first_utterance = self.next_utterance;
         self.next_utterance += 10_000_000;
@@ -572,7 +597,9 @@ impl App {
                 }
                 Output::LoadFailed(e) => {
                     let label = self.engine.as_ref().map_or("the model", |e| e.model.label);
-                    self.errors.push(format!("Could not load {label}: {e}"));
+                    let message = format!("Could not load {label}: {e}");
+                    self.dict.engine_failed = Some(message.clone());
+                    self.errors.push(message);
                     failed = true;
                 }
                 other => changed |= self.apply_output(other),
@@ -677,6 +704,7 @@ impl App {
             models_dir: self.models_dir.clone(),
             meetings_dir: self.meetings_dir.clone(),
             models_move_from: self.models_move_from.clone(),
+            dictation: self.dict.settings.clone(),
         }
     }
 
@@ -715,12 +743,20 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Also runs while the window is hidden in the menu bar, so recordings
+    /// keep being saved and the menu bar item stays current.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         self.refresh_library();
         self.autosave();
+        self.dictation_logic(ctx);
         self.save_settings_if_changed();
+        if self.recording() && self.dict.window_hidden {
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+    }
 
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::Panel::left("sidebar")
             .resizable(false)
             .exact_size(232.0)
@@ -731,8 +767,10 @@ impl eframe::App for App {
             .frame(theme::content_frame(ui))
             .show(ui, |ui| {
                 self.error_banner(ui);
+                self.dictation_banners(ui);
                 match self.page {
                     Page::Meeting => self.meeting_page(ui),
+                    Page::Dictation => self.dictation_page(ui),
                     Page::Settings => self.settings_page(ui),
                 }
             });

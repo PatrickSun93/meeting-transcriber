@@ -1,4 +1,5 @@
-//! The settings page: models, storage folders, recognition options, about.
+//! The settings page: models, storage folders, recognition options,
+//! dictation (in `dictation_page.rs`), about.
 
 use eframe::egui::{self, Align, Layout, RichText, Ui};
 
@@ -18,6 +19,7 @@ impl App {
                     Self::model_card,
                     Self::storage_card,
                     Self::recognition_card,
+                    Self::dictation_card,
                     Self::about_card,
                 ] {
                     theme::card(ui).show(ui, |ui| {
@@ -125,7 +127,7 @@ impl App {
         self.folder_row(ui, Folder::Meetings);
     }
 
-    fn folder_row(&mut self, ui: &mut Ui, folder: Folder) {
+    pub(super) fn folder_row(&mut self, ui: &mut Ui, folder: Folder) {
         let (title, hint, setting) = match folder {
             Folder::Models => (
                 "Models folder",
@@ -136,6 +138,11 @@ impl App {
                 "Meetings folder",
                 "Meetings are saved here as Markdown and listed in the sidebar. Existing files stay where they are.",
                 &self.meetings_dir,
+            ),
+            Folder::Recordings => (
+                "Recordings folder",
+                "voice2cursor's folder by default, so its recordings are listed too.",
+                &self.dict.settings.recordings_dir,
             ),
         };
         let is_default = setting.is_empty();

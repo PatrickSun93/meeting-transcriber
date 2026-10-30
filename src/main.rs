@@ -15,8 +15,9 @@ use meeting_transcriber::{app, wav};
 const USAGE: &str = "\
 Meeting Transcriber
 
-  meeting-transcriber
-      Opens the app window.
+  meeting-transcriber [--hidden]
+      Opens the app window. --hidden (used at login on the Mac) starts in
+      the menu bar with the window closed.
 
   meeting-transcriber transcribe [--me FILE.wav] [--others FILE.wav]
                                  [--model PATH_OR_ID] [--language CODE]
@@ -36,7 +37,8 @@ fn main() -> Result<()> {
         meeting_transcriber::platform::attach_console();
     }
     match args.first().map(String::as_str) {
-        None => run_app(),
+        None => run_app(false),
+        Some("--hidden") => run_app(true),
         Some("transcribe") => run_transcribe(&args[1..]),
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
@@ -46,7 +48,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_app() -> Result<()> {
+fn run_app(hidden: bool) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Meeting Transcriber")
@@ -59,7 +61,7 @@ fn run_app() -> Result<()> {
     eframe::run_native(
         "Meeting Transcriber",
         options,
-        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, hidden)))),
     )
     .map_err(|e| anyhow::anyhow!("could not open the window: {e}"))
 }

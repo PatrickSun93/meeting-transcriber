@@ -27,6 +27,11 @@ pub fn reveal(path: &Path) {
     spawn(Command::new("explorer").raw_arg(arg));
 }
 
+/// Opens a file in the app Windows has for it (a recording in the media player).
+pub fn open_file(path: &Path) {
+    spawn(Command::new("explorer").arg(backslashed(path)));
+}
+
 /// Opens a folder in Explorer, creating it first so there is something to show.
 pub fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);

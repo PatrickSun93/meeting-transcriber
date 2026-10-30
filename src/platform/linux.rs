@@ -41,6 +41,11 @@ pub fn reveal(path: &Path) {
     });
 }
 
+/// Opens a file in the desktop's app for it (a recording in the audio player).
+pub fn open_file(path: &Path) {
+    spawn(Command::new("xdg-open").arg(path));
+}
+
 /// Opens a folder in the file manager, creating it first so there is
 /// something to show.
 pub fn open_folder(dir: &Path) {
