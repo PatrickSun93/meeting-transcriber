@@ -10,9 +10,9 @@ mod theme;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui::{self, RichText};
 
 use crate::chunker::ChunkerConfig;
@@ -21,6 +21,9 @@ use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
+
+/// How long quitting waits for speech that was still being transcribed.
+const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Language choices: None means detect automatically.
 const LANGUAGES: &[(Option<&str>, &str)] = &[
@@ -115,6 +118,9 @@ pub struct App {
     models_dir: String,
     meetings_dir: String,
     engine: Option<Engine>,
+    /// Outputs of replaced engines. Their workers finish the jobs already
+    /// queued (the last speech of a meeting) and then hang up.
+    retired: Vec<Receiver<Output>>,
     download: Option<Download>,
     session: Option<Session>,
     transcript: Transcript,
@@ -152,6 +158,7 @@ impl App {
             models_dir: settings.models_dir.clone(),
             meetings_dir: settings.meetings_dir.clone(),
             engine: None,
+            retired: Vec::new(),
             download: None,
             session: None,
             transcript,
@@ -183,6 +190,7 @@ impl App {
         if self.engine.as_ref().is_some_and(|e| e.model == self.model) || !self.model.is_downloaded() {
             return;
         }
+        self.retire_engine();
         let (job_tx, job_rx) = crossbeam_channel::unbounded();
         let (out_tx, out_rx) = crossbeam_channel::unbounded();
         let path = self.model.path();
@@ -193,13 +201,24 @@ impl App {
             out_tx,
             move || ctx.request_repaint(),
         );
-        // Dropping the old engine's job sender lets its worker finish and exit.
         self.engine = Some(Engine {
             model: self.model,
             jobs: job_tx,
             outputs: out_rx,
             ready: false,
         });
+    }
+
+    /// Drops the engine without losing its work: dropping the job sender
+    /// lets the worker finish what is queued and exit, and its outputs keep
+    /// being read until then. Stopping a meeting and switching models (or
+    /// folders) right away would otherwise lose the last lines.
+    fn retire_engine(&mut self) {
+        if let Some(Engine { outputs, ready, .. }) = self.engine.take()
+            && ready
+        {
+            self.retired.push(outputs);
+        }
     }
 
     /// Switches to another downloaded model (not while recording).
@@ -217,15 +236,21 @@ impl App {
             return;
         }
         if self.engine.as_ref().is_some_and(|e| e.model == model) {
-            self.engine = None;
+            self.retire_engine();
         }
         if let Err(e) = model.delete() {
             self.errors.push(format!("{e:#}"));
         }
     }
 
+    /// A download can start unless one is running or models are being
+    /// moved (it would land in the folder being emptied).
+    fn can_download(&self) -> bool {
+        self.download.is_none() && self.model_move.is_none()
+    }
+
     fn start_download(&mut self, model: ModelInfo) {
-        if self.download.is_some() {
+        if !self.can_download() {
             return;
         }
         let progress = Arc::new(Mutex::new((0, None)));
@@ -296,6 +321,12 @@ impl App {
     fn set_folder(&mut self, folder: Folder, setting: String) {
         match folder {
             Folder::Meetings => self.meetings_dir = setting,
+            // A running download writes into the current folder, so it would
+            // end up left behind. The buttons are disabled meanwhile, but the
+            // folder dialog may have been opened before the download started.
+            Folder::Models if self.download.is_some() => self
+                .errors
+                .push("Finish or cancel the download before changing the models folder.".into()),
             Folder::Models => {
                 let from = models::configured_dir();
                 let to = settings::expand_dir(&setting).unwrap_or_else(models::default_models_dir);
@@ -319,7 +350,7 @@ impl App {
         models::set_configured_dir(settings::expand_dir(&self.models_dir));
         // The loaded model can stay loaded only if it is in the new folder too.
         if !self.model.is_downloaded() && !self.recording() {
-            self.engine = None;
+            self.retire_engine();
         }
         self.ensure_engine();
     }
@@ -426,39 +457,94 @@ impl App {
     fn poll_engine(&mut self) {
         let mut changed = false;
         let mut failed = false;
-        if let Some(engine) = &mut self.engine {
-            for output in engine.outputs.try_iter() {
-                match output {
-                    Output::Ready => engine.ready = true,
-                    Output::LoadFailed(e) => {
-                        self.errors.push(format!("Could not load {}: {e}", engine.model.label));
-                        failed = true;
+        let outputs: Vec<Output> = self
+            .engine
+            .as_ref()
+            .map_or_else(Vec::new, |e| e.outputs.try_iter().collect());
+        for output in outputs {
+            match output {
+                Output::Ready => {
+                    if let Some(engine) = &mut self.engine {
+                        engine.ready = true;
                     }
-                    Output::Preview {
-                        speaker,
-                        utterance,
-                        start,
-                        text,
-                    } => self.transcript.set_preview(speaker, utterance, start, text),
-                    Output::Final {
-                        speaker,
-                        utterance,
-                        line,
-                    } => match line {
-                        Some(line) => changed |= self.transcript.add_final(utterance, line),
-                        None => self.transcript.end_utterance(speaker, utterance),
-                    },
-                    Output::Speed { audio_seconds, seconds } => {
-                        if audio_seconds > 0.0 {
-                            self.speed = Some(seconds / audio_seconds);
-                        }
-                    }
-                    Output::Error(e) => self.errors.push(e),
                 }
+                Output::LoadFailed(e) => {
+                    let label = self.engine.as_ref().map_or("the model", |e| e.model.label);
+                    self.errors.push(format!("Could not load {label}: {e}"));
+                    failed = true;
+                }
+                other => changed |= self.apply_output(other),
             }
         }
         if failed {
             self.engine = None;
+        }
+        changed |= self.poll_retired();
+        if changed {
+            self.save();
+        }
+    }
+
+    /// Reads what retired engines still produce, forgetting those whose
+    /// worker has exited.
+    fn poll_retired(&mut self) -> bool {
+        let mut changed = false;
+        let mut retired = std::mem::take(&mut self.retired);
+        retired.retain(|outputs| {
+            loop {
+                match outputs.try_recv() {
+                    Ok(output) => changed |= self.apply_output(output),
+                    Err(TryRecvError::Empty) => break true,
+                    Err(TryRecvError::Disconnected) => break false,
+                }
+            }
+        });
+        self.retired = retired;
+        changed
+    }
+
+    /// Applies a transcription result. Returns true if a line was added.
+    fn apply_output(&mut self, output: Output) -> bool {
+        match output {
+            Output::Preview {
+                speaker,
+                utterance,
+                start,
+                text,
+            } => self.transcript.set_preview(speaker, utterance, start, text),
+            Output::Final {
+                speaker,
+                utterance,
+                line,
+            } => match line {
+                Some(line) => return self.transcript.add_final(utterance, line),
+                None => self.transcript.end_utterance(speaker, utterance),
+            },
+            Output::Speed { audio_seconds, seconds } => {
+                if audio_seconds > 0.0 {
+                    self.speed = Some(seconds / audio_seconds);
+                }
+            }
+            Output::Error(e) => self.errors.push(e),
+            // Only meaningful for the current engine; see poll_engine.
+            Output::Ready | Output::LoadFailed(_) => {}
+        }
+        false
+    }
+
+    /// On quit: waits (up to EXIT_DRAIN_TIMEOUT) for speech that was still
+    /// being transcribed, so the saved file has the meeting's last lines.
+    /// Returns at once when nothing is pending, since an idle worker exits
+    /// as soon as its job sender is gone.
+    fn finish_pending(&mut self) {
+        self.retire_engine();
+        let deadline = Instant::now() + EXIT_DRAIN_TIMEOUT;
+        let mut changed = false;
+        for outputs in std::mem::take(&mut self.retired) {
+            // Ends when the worker hangs up or time runs out.
+            while let Ok(output) = outputs.recv_deadline(deadline) {
+                changed |= self.apply_output(output);
+            }
         }
         if changed {
             self.save();
@@ -552,6 +638,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self) {
         self.stop_session();
+        self.finish_pending();
     }
 }
 

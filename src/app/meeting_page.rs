@@ -132,7 +132,7 @@ impl App {
         if !self.model.is_downloaded() {
             ui.label(format!("{} is not downloaded yet.", self.model.label));
             let button = egui::Button::new(format!("⬇  Download ({} MB)", self.model.size_mb));
-            if ui.add_enabled(self.download.is_none(), button).clicked() {
+            if ui.add_enabled(self.can_download(), button).clicked() {
                 self.start_download(self.model);
             }
             return;
@@ -156,6 +156,7 @@ impl App {
 
     fn transcript_view(&mut self, ui: &mut Ui) {
         egui::ScrollArea::vertical()
+            .id_salt("transcript_scroll")
             .auto_shrink(false)
             .stick_to_bottom(true)
             .show(ui, |ui| {

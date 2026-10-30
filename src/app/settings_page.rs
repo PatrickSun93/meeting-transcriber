@@ -8,22 +8,25 @@ use crate::settings;
 
 impl App {
     pub(super) fn settings_page(&mut self, ui: &mut Ui) {
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            ui.heading("Settings");
-            ui.add_space(10.0);
-            for section in [
-                Self::model_card,
-                Self::storage_card,
-                Self::recognition_card,
-                Self::about_card,
-            ] {
-                theme::card(ui).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    section(self, ui);
-                });
-                ui.add_space(12.0);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .id_salt("settings_scroll")
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                ui.heading("Settings");
+                ui.add_space(10.0);
+                for section in [
+                    Self::model_card,
+                    Self::storage_card,
+                    Self::recognition_card,
+                    Self::about_card,
+                ] {
+                    theme::card(ui).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        section(self, ui);
+                    });
+                    ui.add_space(12.0);
+                }
+            });
     }
 
     fn model_card(&mut self, ui: &mut Ui) {
@@ -100,7 +103,7 @@ impl App {
             }
         } else {
             let button = egui::Button::new(format!("⬇  Download ({} MB)", model.size_mb));
-            if ui.add_enabled(self.download.is_none() && !moving, button).clicked() {
+            if ui.add_enabled(self.can_download(), button).clicked() {
                 self.start_download(model);
             }
         }
@@ -172,7 +175,8 @@ impl App {
                 ui.weak("Choosing a folder…");
             }
         });
-        if folder == Folder::Models && !busy && (self.recording() || self.download.is_some()) {
+        // Says why Change… is greyed out (the env var case is explained above).
+        if folder == Folder::Models && env_dir.is_none() && (self.recording() || self.download.is_some()) {
             ui.weak("Finish recording or downloading to change the folder.");
         }
     }
@@ -196,6 +200,8 @@ impl App {
             format_size(offer.bytes)
         );
         let to = offer.to.display().to_string();
+        // A download writes into the current folder; switching now would strand it.
+        let downloading = self.download.is_some();
         egui::Frame::new()
             .fill(theme::accent(ui).gamma_multiply(0.1))
             .corner_radius(8)
@@ -204,14 +210,17 @@ impl App {
                 ui.set_width(ui.available_width());
                 ui.label(RichText::new(question).strong());
                 ui.weak(format!("New folder: {to}"));
+                if downloading {
+                    ui.weak("Waiting for the download to finish…");
+                }
                 ui.horizontal(|ui| {
-                    if ui.button("Move").clicked()
+                    if ui.add_enabled(!downloading, egui::Button::new("Move")).clicked()
                         && let Some(offer) = self.move_offer.take()
                     {
                         self.start_model_move(offer);
                     }
                     if ui
-                        .button("Leave them")
+                        .add_enabled(!downloading, egui::Button::new("Leave them"))
                         .on_hover_text("Switch folders; models you need again can be downloaded.")
                         .clicked()
                         && let Some(offer) = self.move_offer.take()
