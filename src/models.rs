@@ -1,6 +1,6 @@
 //! Whisper model files (whisper.cpp GGML format) and downloading them.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -277,7 +277,8 @@ fn move_file(src: &Path, dst: &Path) -> Result<()> {
 fn copy_then_remove(src: &Path, dst: &Path) -> Result<()> {
     let part = dst.with_extension("bin.part");
     let copied = std::fs::copy(src, &part)
-        .and_then(|_| File::open(&part)?.sync_all())
+        // Opened for writing: Windows refuses to flush a read-only handle.
+        .and_then(|_| OpenOptions::new().write(true).open(&part)?.sync_all())
         .and_then(|_| std::fs::rename(&part, dst));
     if let Err(e) = copied {
         let _ = std::fs::remove_file(&part);
