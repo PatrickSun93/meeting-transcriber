@@ -35,8 +35,8 @@ impl Default for Settings {
     }
 }
 
-/// `~/Library/Application Support/Meeting Transcriber/settings.txt`. Not in
-/// the models folder, since that folder is itself a setting.
+/// `settings.txt` in the app data folder (see `models::app_support_dir`).
+/// Not in the models folder, since that folder is itself a setting.
 pub fn settings_path() -> PathBuf {
     crate::models::app_support_dir().join("settings.txt")
 }
@@ -52,9 +52,13 @@ fn expand_with_home(value: &str, home: Option<&Path>) -> Option<PathBuf> {
     if value.is_empty() {
         return None;
     }
+    // Windows users may well write `~\Models`.
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
     match (value.strip_prefix('~'), home) {
         (Some(""), Some(home)) => Some(home.to_path_buf()),
-        (Some(rest), Some(home)) if rest.starts_with('/') => Some(home.join(rest.trim_start_matches('/'))),
+        (Some(rest), Some(home)) if rest.starts_with(separators) => {
+            Some(home.join(rest.trim_start_matches(separators)))
+        }
         _ => Some(PathBuf::from(value)),
     }
 }
@@ -177,5 +181,11 @@ mod tests {
         assert_eq!(expand("~other/x"), Some(PathBuf::from("~other/x")));
         assert_eq!(expand("/a/~/b"), Some(PathBuf::from("/a/~/b")));
         assert_eq!(expand_with_home("~/x", None), Some(PathBuf::from("~/x")));
+        let backslash = expand(r"~\Models");
+        if cfg!(windows) {
+            assert_eq!(backslash, Some(home.join("Models")));
+        } else {
+            assert_eq!(backslash, Some(PathBuf::from(r"~\Models")));
+        }
     }
 }

@@ -1,3 +1,7 @@
+// Release builds on Windows are GUI programs, so opening the app does not
+// also open a console window. The CLI reattaches to its caller's console.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -23,6 +27,8 @@ Meeting Transcriber
 ";
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    meeting_transcriber::platform::attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => run_app(),
@@ -39,6 +45,8 @@ fn run_app() -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Meeting Transcriber")
+            // Matches the .desktop file on Linux (Wayland), for the icon and grouping.
+            .with_app_id("meeting-transcriber")
             .with_inner_size([1100.0, 720.0])
             .with_min_inner_size([720.0, 420.0]),
         ..Default::default()

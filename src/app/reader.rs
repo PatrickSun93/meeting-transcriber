@@ -339,7 +339,10 @@ fn empty_state(ui: &mut Ui, filter: Option<Speaker>, no_lines: bool) {
         ui.label(RichText::new("No transcript yet").size(17.0).strong().weak());
         ui.add_space(4.0);
         ui.weak("Press the red button, then join or continue your meeting.");
-        ui.weak("Your microphone shows as Me; everything the Mac plays shows as Others.");
+        ui.weak(format!(
+            "Your microphone shows as Me; everything {} plays shows as Others.",
+            platform::THIS_COMPUTER
+        ));
     });
 }
 

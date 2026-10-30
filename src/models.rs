@@ -103,8 +103,9 @@ impl ModelInfo {
     }
 }
 
-/// `~/Library/Application Support/Meeting Transcriber` on macOS: settings
-/// and, by default, the models.
+/// Settings and, by default, the models: `~/Library/Application Support/
+/// Meeting Transcriber` on macOS, `%APPDATA%\Meeting Transcriber` on Windows,
+/// `~/.local/share/Meeting Transcriber` on Linux.
 pub fn app_support_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(std::env::temp_dir)

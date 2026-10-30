@@ -285,7 +285,7 @@ impl App {
                     .clicked()
             {
                 self.save_open();
-                platform::reveal_in_finder(&path);
+                platform::reveal(&path);
             }
             ui.add_enabled_ui(has_content && !self.exporting(), |ui| self.export_menu(ui));
             if self.open.read_only()
@@ -348,7 +348,7 @@ impl App {
             ui.label(RichText::new(&notice.text).color(theme::accent(ui)));
         }
         if let Some(file) = show {
-            platform::reveal_in_finder(&file);
+            platform::reveal(&file);
         }
         if self.exporting() {
             ui.spinner();

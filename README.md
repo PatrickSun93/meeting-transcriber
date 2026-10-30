@@ -1,6 +1,6 @@
 # Meeting Transcriber
 
-A native Mac app, written in Rust, that writes down your meetings as they happen. Everything runs on your own Mac, and no audio leaves it.
+A native app, written in Rust, that writes down your meetings as they happen. It is made for the Mac and also runs on [Windows and Linux](#windows-and-linux). Everything runs on your own computer, and no audio leaves it.
 
 - **Me**: whatever your microphone hears.
 - **Others**: whatever the Mac plays, so every other participant counts as one speaker.
@@ -8,7 +8,7 @@ A native Mac app, written in Rust, that writes down your meetings as they happen
 - **Any language**: speech is written in the language it was spoken. You can mix languages, and each line is detected on its own.
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
 
-Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal). It uses the `large-v3-turbo` model by default.
+Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the processor, or the graphics card with a Vulkan or CUDA build). It uses the `large-v3-turbo` model by default.
 
 ```
  microphone ──► Me ─────┐
@@ -56,6 +56,79 @@ macOS asks for two permissions:
 
 If *Others* stays silent, this permission is almost always the reason. After you rebuild the app, macOS may treat it as a new app; switch the permission off and on again.
 
+## Windows and Linux
+
+The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *Others*, the meeting library, notes, the reader and Settings. What differs:
+
+| | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
+| Whisper runs on | the GPU (Metal) | the processor, or the GPU with `--features vulkan` / `cuda` | the same as Windows |
+| Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%APPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
+| Folder dialog, file manager | Finder | Explorer | zenity or kdialog; the file manager over D-Bus, else `xdg-open` |
+
+On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If the status line shows more than "1× real time", pick **Small** or **Base** in Settings, or build with a GPU backend.
+
+*Others* is whatever plays on the **default** output device. If the meeting app is set to a different speaker or headset than the system default, *Others* stays silent; make that device the default or switch the meeting app to it.
+
+### Windows
+
+1. Install the build tools, once:
+   - [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**
+   - [Rust](https://rustup.rs) (the default MSVC toolchain)
+   - CMake and LLVM (whisper.cpp's bindings need `libclang`) and Git:
+
+     ```powershell
+     winget install Kitware.CMake LLVM.LLVM Git.Git
+     ```
+
+2. Build it (the first build compiles whisper.cpp and takes a few minutes):
+
+   ```powershell
+   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
+   cd teams-meeting-plugin
+   cargo build --release
+   ```
+
+3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. CI also builds it on every push (artifact *Meeting-Transcriber-Windows-x86_64*).
+
+4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
+
+For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA).
+
+The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`.
+
+### Linux
+
+1. Install the build tools and libraries, once:
+
+   ```bash
+   # Debian, Ubuntu
+   sudo apt install build-essential cmake clang libasound2-dev pulseaudio-utils zenity
+   # Fedora
+   sudo dnf install gcc-c++ cmake clang-devel alsa-lib-devel pulseaudio-utils zenity
+   # Arch
+   sudo pacman -S base-devel cmake clang alsa-lib libpulse zenity
+   ```
+
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
+
+   `pulseaudio-utils` (`libpulse` on Arch) provides `parec`, which records *Others*; it works with PipeWire as well. `zenity` (or KDE's `kdialog`) shows the folder dialog.
+
+2. Build and install it for your user (the program goes to `~/.local/bin`, a launcher to the app menu):
+
+   ```bash
+   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
+   cd teams-meeting-plugin
+   ./scripts/install-linux.sh
+   ```
+
+   Or just run it from the checkout with `cargo run --release`. For the GPU, add `--features vulkan` (needs the Vulkan headers and `glslc`, e.g. `libvulkan-dev glslc`) or `--features cuda`.
+
+3. Open **Meeting Transcriber** from the app menu. It runs on X11 and Wayland.
+
 ## Using it
 
 1. Press the red record button before or during your meeting.
@@ -91,12 +164,12 @@ Your notes.
 
 There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summarize it with the assistant of your choice.
 
-- **Sidebar**: **New meeting**, a search box (titles and tags; `#tag` searches tags only), and every meeting grouped by Today, Yesterday and date. Right-click a meeting to **Rename**, **Show in Finder** or **Delete** it. While recording, other meetings can't be opened.
+- **Sidebar**: **New meeting**, a search box (titles and tags; `#tag` searches tags only), and every meeting grouped by Today, Yesterday and date. Right-click a meeting to **Rename**, **Show in Finder** (Explorer, or the file manager) or **Delete** it. While recording, other meetings can't be opened.
 - **Title and tags** are edited at the top of the page. Changing the title renames the file.
 - **Autosave**: changes are written a second after you stop typing (and at least every few seconds), when recording stops, when you switch meetings and when you quit.
 - **Continue a meeting**: open it and press record. The clock continues where it stopped.
 - **Edit anywhere**: the files work in Obsidian or any editor. Extra frontmatter keys are kept, and the list picks up changes within a few seconds. An open meeting reloads when its file changes, unless you have unsaved edits in the app.
-- **Reading a transcript**: show **All**, **Me** or **Others**; **Find in transcript** (⌘F) highlights matches, with Return / Shift-Return (or the arrows) for next and previous. Click a timestamp to copy that line, or right-click a line for more. Each meeting keeps its scroll position.
+- **Reading a transcript**: show **All**, **Me** or **Others**; **Find in transcript** (⌘F; Ctrl+F on Windows and Linux) highlights matches, with Return / Shift-Return (or the arrows) for next and previous. Click a timestamp to copy that line, or right-click a line for more. Each meeting keeps its scroll position.
 - **Export**: **Copy all** as Markdown or plain text; **Export** saves a `.txt` next to the meeting, or a `.txt` / `.md` to a folder you pick.
 - **Old transcripts**: `Meeting <date> <time>.txt` files from earlier versions are listed (marked *txt*) and open read-only. **Convert to Markdown** makes a `.md` meeting from one and keeps the `.txt`.
 
@@ -104,7 +177,7 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 ## Settings
 
-Open **Settings** at the bottom of the sidebar. The app remembers your choices in `~/Library/Application Support/Meeting Transcriber/settings.txt`.
+Open **Settings** at the bottom of the sidebar. The app remembers your choices in `settings.txt` in `~/Library/Application Support/Meeting Transcriber` (Windows: `%APPDATA%\Meeting Transcriber`, Linux: `~/.local/share/Meeting Transcriber`).
 
 | Setting | Notes |
 | --- | --- |
@@ -139,18 +212,15 @@ To test without a meeting, these variables replace the live sources with WAV fil
 MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav cargo run --release
 ```
 
-`MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is `~/Library/Application Support/Meeting Transcriber/models`.
+`MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is the `models` folder in the app data folder (see [Windows and Linux](#windows-and-linux) for where that is).
 
-CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also runs clippy and the tests on Linux.
-
-### Windows and Linux
-
-The app is made for macOS, but the code also builds on Linux (checked in CI) and is meant to build on Windows (`cargo run --release`; Linux needs `libasound2-dev`, both need CMake and a C++ compiler for whisper.cpp). There, *Me* (the microphone), the meeting library, notes and the reader work; Whisper runs on the CPU, so pick a smaller model. *Others* is macOS-only for now, since system audio is captured with ScreenCaptureKit. Folder pickers use zenity or kdialog on Linux and the standard dialog on Windows. Settings and models live in the platform's data folder (`~/.local/share/Meeting Transcriber` on Linux, `%APPDATA%\Meeting Transcriber` on Windows). Windows builds are not tested yet.
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and builds it on Windows and Linux, and attaches the Windows `.exe` and the Linux binary.
 
 | File | Role |
 | --- | --- |
-| `src/audio/mic.rs` | Microphone capture (cpal / Core Audio) |
-| `src/audio/system.rs` | Mac audio capture (ScreenCaptureKit) |
+| `src/audio/mic.rs` | Microphone capture with cpal; also Others on Windows (WASAPI loopback) |
+| `src/audio/system/` | Others: ScreenCaptureKit on macOS, `parec` on Linux |
+| `src/audio/silence.rs` | Fills gaps from loopback sources that go quiet, so timestamps stay right |
 | `src/audio/dsp.rs` | Low-pass filter and resampling to 16 kHz mono |
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
 | `src/session.rs` | Connects the sources, chunkers and transcriber |
@@ -163,7 +233,7 @@ The app is made for macOS, but the code also builds on Linux (checked in CI) and
 | `src/app/settings_page.rs` | Models, folders, recognition options |
 | `src/app/sidebar.rs` | New meeting, search, meeting list, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
-| `src/app/platform.rs` | The file manager and the folder picker (macOS, Windows, Linux) |
+| `src/platform/` | What differs per system: file manager, folder dialog, wording, console (macOS, Windows, Linux) |
 | `src/models.rs` | Model list, folders, download and moving |
 | `src/settings.rs` | Saved settings |
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |

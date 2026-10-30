@@ -27,7 +27,19 @@ pub trait SpeechToText: Send {
     fn transcribe(&mut self, samples: &[f32], language: Option<&str>) -> Result<Recognized>;
 }
 
-/// Whisper via whisper.cpp; uses the GPU through Metal on Apple Silicon.
+/// The GPU backend whisper.cpp was built with, if any: Metal on macOS,
+/// Vulkan or CUDA when the matching feature is on.
+pub const GPU: Option<&str> = if cfg!(target_os = "macos") {
+    Some("Metal")
+} else if cfg!(feature = "cuda") {
+    Some("CUDA")
+} else if cfg!(feature = "vulkan") {
+    Some("Vulkan")
+} else {
+    None
+};
+
+/// Whisper via whisper.cpp, on the GPU when it was built with one (see `GPU`).
 pub struct WhisperEngine {
     state: whisper_rs::WhisperState,
     threads: i32,

@@ -3,7 +3,6 @@
 
 mod library;
 mod meeting_page;
-mod platform;
 mod reader;
 mod settings_page;
 mod sidebar;
@@ -19,6 +18,7 @@ use eframe::egui::{self, RichText};
 
 use crate::chunker::ChunkerConfig;
 use crate::models::{self, DEFAULT_MODEL, ModelInfo};
+use crate::platform;
 use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};

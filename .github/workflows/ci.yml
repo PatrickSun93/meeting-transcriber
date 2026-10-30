@@ -31,6 +31,7 @@ jobs:
           path: target/release/bundle/Meeting-Transcriber-macOS.zip
 
   linux:
+    # CPU build; Others is recorded from the sound server with parec.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,3 +42,25 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-Linux-x86_64
+          path: target/release/meeting-transcriber
+
+  windows:
+    # CPU build with MSVC; Others is recorded with WASAPI loopback.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-Windows-x86_64
+          path: target/release/meeting-transcriber.exe

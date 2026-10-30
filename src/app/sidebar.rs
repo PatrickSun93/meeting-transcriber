@@ -158,7 +158,7 @@ impl App {
                 action = Some(RowAction::StartRename(entry.clone()));
             }
             if ui.button(platform::SHOW_IN_FILES).clicked() {
-                platform::reveal_in_finder(&entry.path);
+                platform::reveal(&entry.path);
             }
             ui.separator();
             if ui

@@ -31,7 +31,16 @@ impl App {
 
     fn model_card(&mut self, ui: &mut Ui) {
         theme::card_title(ui, "Model");
-        ui.weak("Whisper runs on this Mac. Larger models are more accurate but slower.");
+        ui.weak(format!(
+            "Whisper runs on {}. Larger models are more accurate but slower.",
+            platform::THIS_COMPUTER
+        ));
+        if crate::transcriber::GPU.is_none() {
+            ui.weak(
+                "This build runs Whisper on the processor. Small or Base keep up live more easily; \
+                 a build with --features vulkan or cuda uses the graphics card.",
+            );
+        }
         if self.recording() {
             ui.colored_label(ui.visuals().warn_fg_color, "Stop recording to switch models.");
         }
@@ -93,7 +102,7 @@ impl App {
                 self.confirm_delete = Some(model);
             }
             if ui.button(platform::SHOW_IN_FILES).clicked() {
-                platform::reveal_in_finder(&model.path());
+                platform::reveal(&model.path());
             }
             if !in_use {
                 let can_use = !moving && !self.recording();
@@ -290,7 +299,7 @@ impl App {
             ui.add_space(6.0);
             ui.label("Capture");
             ui.checkbox(&mut self.capture_me, "Me (microphone)");
-            ui.checkbox(&mut self.capture_others, "Others (Mac audio)");
+            ui.checkbox(&mut self.capture_others, format!("Others ({})", platform::SYSTEM_AUDIO));
         });
         if recording {
             ui.weak("Language and sources apply from the next recording.");
@@ -320,7 +329,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.add(egui::Label::new(RichText::new(settings_file.display().to_string()).monospace()).wrap());
                     if settings_file.exists() && ui.small_button("Show").clicked() {
-                        platform::reveal_in_finder(&settings_file);
+                        platform::reveal(&settings_file);
                     }
                 });
                 ui.end_row();

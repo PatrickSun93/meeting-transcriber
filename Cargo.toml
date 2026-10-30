@@ -2,7 +2,7 @@
 name = "meeting-transcriber"
 version = "0.1.0"
 edition = "2024"
-description = "Live meeting transcription on macOS: your mic is 'Me', the Mac's audio is 'Others'. Local Whisper."
+description = "Live meeting transcription on macOS, Windows and Linux: your mic is 'Me', the computer's audio is 'Others'. Local Whisper."
 license = "MIT"
 publish = false
 
@@ -16,6 +16,12 @@ eframe = "0.37"
 hound = "3"
 ureq = "3"
 whisper-rs = "0.16"
+
+[features]
+# Whisper on the GPU for Windows and Linux builds (macOS always uses Metal).
+# Building needs the Vulkan SDK or the CUDA toolkit.
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = "11"
