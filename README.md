@@ -19,7 +19,7 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 
 ## Install (Mac, Apple Silicon, macOS 13 or newer)
 
-1. Install the build tools, once:
+1. Install the build tools, once. You need the **Xcode 26** toolchain or newer, because the system-audio library uses the macOS 26 SDK. It installs on macOS 15.6 or later, and the app itself still runs on macOS 13+. Either install Xcode 26 from the App Store, or install the Command Line Tools and check that `swift --version` reports Swift 6.2 or newer:
 
    ```bash
    xcode-select --install
