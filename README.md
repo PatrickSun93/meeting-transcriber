@@ -202,7 +202,7 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 ## Dictation
 
-This replaces the old voice2cursor tool and works the same way:
+Hold a key, speak, and let go: the text is typed where the cursor is, in any app.
 
 1. Hold **Right Option** on the Mac, **Right Ctrl** on Windows and Linux (the hotkey can be changed), in any app. You hear a short sound (*Tink* on the Mac).
 2. Speak, then let go. The text is copied and pasted where the cursor is (*Pop*; *Basso* if something failed). Presses shorter than 0.35 s are ignored, and recording stops on its own after 5 minutes.
@@ -211,13 +211,9 @@ This replaces the old voice2cursor tool and works the same way:
 Dictation is served before meeting audio by the same Whisper engine, so a meeting and dictation never load the model twice.
 
 - **Menu bar** (Mac): a microphone icon shows the state (hourglass loading, mic ready, red mic recording, waveform transcribing, crossed-out mic paused, triangle after an error). Its menu has the last 10 dictations (click one to copy it), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app in the menu bar, recording included; **Quit** (or ⌘Q) really quits.
-- **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name. On the Mac they go to `~/.voice2cursor/recordings`, voice2cursor's folder, so its earlier recordings are listed too; on Windows and Linux to `Dictation` in the app data folder (see [Windows and Linux](#windows-and-linux)). The folder can be changed in Settings.
-- **voice2cursor** (Mac): if it is running (it listens for the same key), dictation pauses and says so, also when it starts later. Stop it with `/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh`, then press **Resume dictation**. A second copy of Meeting Transcriber (one run from a build folder, say) also stays paused while the first one dictates.
-- **Ollama** (off by default): a local model fixes punctuation and Chinese/English spacing, with voice2cursor's prompt. If Ollama fails or is slow, the text is pasted as Whisper wrote it.
-- **Moving over from voice2cursor** (Mac):
-  1. Stop it: `/Volumes/externalssd/devitems/tools/voice2cursor/stop.sh`. This only stops it until the next login.
-  2. In Meeting Transcriber, press **Resume dictation** if it paused, and dictate for a while. Its earlier recordings are already in the **Dictation** tab.
-  3. Once you are happy, remove it for good: `/Volumes/externalssd/devitems/tools/voice2cursor/uninstall.sh`. It removes its login item and state but keeps `~/.voice2cursor/recordings`, which Meeting Transcriber keeps using. Then switch on **Open at login** here.
+- **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name. On the Mac they go to `~/.voice2cursor/recordings`; on Windows and Linux to `Dictation` in the app data folder (see [Windows and Linux](#windows-and-linux)). The folder can be changed in Settings.
+- **One copy dictates**: a second copy of Meeting Transcriber (one run from a build folder, say) stays paused while the first one dictates.
+- **Ollama** (off by default): a local model fixes punctuation and Chinese/English spacing, If Ollama fails or is slow, the text is pasted as Whisper wrote it.
 - **Open at login** (Settings): on the Mac it adds `~/Library/LaunchAgents/com.patricksun.meeting-transcriber.plist`, which opens `/Applications/Meeting Transcriber.app` in the menu bar when you log in. Switching it off removes the file. Nothing is set up until you switch it on.
 
 ### Windows
@@ -318,7 +314,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
 | `src/session.rs` | Connects the sources, chunkers and transcriber; silences Me while dictating |
 | `src/transcriber.rs` | Whisper engine and job queue (dictation first, then finals; stale partials dropped) |
-| `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, Ollama clean-up, noticing voice2cursor |
+| `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, Ollama clean-up |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
 | `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
