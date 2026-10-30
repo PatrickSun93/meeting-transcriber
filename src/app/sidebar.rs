@@ -157,7 +157,7 @@ impl App {
             {
                 action = Some(RowAction::StartRename(entry.clone()));
             }
-            if ui.button("Show in Finder").clicked() {
+            if ui.button(platform::SHOW_IN_FILES).clicked() {
                 platform::reveal_in_finder(&entry.path);
             }
             ui.separator();

@@ -230,8 +230,9 @@ pub fn record_button(ui: &mut Ui, recording: bool, enabled: bool) -> Response {
 }
 
 /// egui's built-in fonts have no Chinese, Japanese or Korean glyphs.
-/// Adds macOS system fonts that do, as fallbacks.
+/// Adds system fonts that do, as fallbacks.
 fn install_fallback_fonts(ctx: &egui::Context) {
+    #[cfg(target_os = "macos")]
     const CANDIDATES: &[&str] = &[
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -239,10 +240,29 @@ fn install_fallback_fonts(ctx: &egui::Context) {
         "/System/Library/Fonts/AppleSDGothicNeo.ttc",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/Library/Fonts/Arial Unicode.ttf",
-        // Linux, for development.
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ];
+    // Microsoft YaHei, Yu Gothic and Malgun Gothic ship with Windows 10+.
+    #[cfg(windows)]
+    const CANDIDATES: &[&str] = &[
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\YuGothM.ttc",
+        r"C:\Windows\Fonts\malgun.ttf",
+    ];
+    // Noto CJK covers all three; its path differs between distributions.
+    // One is enough, and each is large.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    const CANDIDATES: &[&str] = &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ];
+    let linux = cfg!(not(any(target_os = "macos", windows)));
+    let mut added = false;
     for (i, path) in CANDIDATES.iter().enumerate() {
+        if linux && added {
+            break;
+        }
         let Ok(bytes) = std::fs::read(path) else { continue };
         let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
             .into_iter()
@@ -256,5 +276,6 @@ fn install_fallback_fonts(ctx: &egui::Context) {
             egui::FontData::from_owned(bytes),
             families,
         ));
+        added = true;
     }
 }
