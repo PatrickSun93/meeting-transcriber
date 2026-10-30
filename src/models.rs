@@ -104,10 +104,12 @@ impl ModelInfo {
 }
 
 /// Settings and, by default, the models: `~/Library/Application Support/
-/// Meeting Transcriber` on macOS, `%APPDATA%\Meeting Transcriber` on Windows,
-/// `~/.local/share/Meeting Transcriber` on Linux.
+/// Meeting Transcriber` on macOS, `%LOCALAPPDATA%\Meeting Transcriber` on
+/// Windows, `~/.local/share/Meeting Transcriber` on Linux. Local, not
+/// roaming, on Windows: a roaming profile would copy gigabytes of models
+/// to the server at every sign-out.
 pub fn app_support_dir() -> PathBuf {
-    dirs::data_dir()
+    dirs::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("Meeting Transcriber")
 }

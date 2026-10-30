@@ -104,6 +104,14 @@ fn windows_picker_script(prompt: &str, start: &Path) -> String {
     script
 }
 
+/// The path with `\` for every `/`. Windows accepts both, but Explorer
+/// does not: given `D:/Models` or `C:\Users\me\Models/old` (a folder
+/// typed in Settings), it opens its default folder instead. Names cannot contain `/`.
+#[cfg(any(windows, test))]
+fn backslashed(path: &Path) -> PathBuf {
+    PathBuf::from(path.to_string_lossy().replace('/', "\\"))
+}
+
 /// A `file://` URI for a local path, as the freedesktop file manager
 /// interface wants it: every byte outside the unreserved set and `/` is
 /// percent-encoded, so spaces and non-ASCII names survive.
@@ -142,6 +150,15 @@ mod tests {
         assert!(!script.contains("$d.SelectedPath = "));
         let start = std::env::temp_dir();
         assert!(windows_picker_script("x", &start).contains("$d.SelectedPath = '"));
+    }
+
+    #[test]
+    fn explorer_gets_backslashes() {
+        assert_eq!(
+            backslashed(Path::new(r"C:\Users\me\Models/old")),
+            PathBuf::from(r"C:\Users\me\Models\old")
+        );
+        assert_eq!(backslashed(Path::new("D:/Models")), PathBuf::from(r"D:\Models"));
     }
 
     #[cfg(unix)]

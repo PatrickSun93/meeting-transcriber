@@ -4,7 +4,7 @@ use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{picked_path, spawn, windows_picker_script};
+use super::{backslashed, picked_path, spawn, windows_picker_script};
 
 pub const SHOW_IN_FILES: &str = "Show in Explorer";
 pub const THIS_COMPUTER: &str = "this PC";
@@ -23,7 +23,7 @@ pub fn reveal(path: &Path) {
     // would wrap the whole argument and Explorer would not parse it.
     // (Windows paths cannot contain quotes.)
     let mut arg = std::ffi::OsString::from("/select,\"");
-    arg.push(path);
+    arg.push(backslashed(path));
     arg.push("\"");
     spawn(Command::new("explorer").raw_arg(arg));
 }
@@ -31,12 +31,17 @@ pub fn reveal(path: &Path) {
 /// Opens a folder in Explorer, creating it first so there is something to show.
 pub fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
-    spawn(Command::new("explorer").arg(dir));
+    spawn(Command::new("explorer").arg(backslashed(dir)));
 }
 
 pub(super) fn run_picker(prompt: &str, start: &Path) -> Option<PathBuf> {
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-STA", "-Command", &windows_picker_script(prompt, start)])
+        .args([
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            &windows_picker_script(prompt, &backslashed(start)),
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;

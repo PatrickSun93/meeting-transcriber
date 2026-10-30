@@ -232,35 +232,9 @@ pub fn record_button(ui: &mut Ui, recording: bool, enabled: bool) -> Response {
 /// egui's built-in fonts have no Chinese, Japanese or Korean glyphs.
 /// Adds system fonts that do, as fallbacks.
 fn install_fallback_fonts(ctx: &egui::Context) {
-    #[cfg(target_os = "macos")]
-    const CANDIDATES: &[&str] = &[
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-    ];
-    // Microsoft YaHei, Yu Gothic and Malgun Gothic ship with Windows 10+.
-    #[cfg(windows)]
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\YuGothM.ttc",
-        r"C:\Windows\Fonts\malgun.ttf",
-    ];
-    // Noto CJK covers all three; its path differs between distributions.
-    // One is enough, and each is large.
-    #[cfg(not(any(target_os = "macos", windows)))]
-    const CANDIDATES: &[&str] = &[
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    ];
     let linux = cfg!(not(any(target_os = "macos", windows)));
     let mut added = false;
-    for (i, path) in CANDIDATES.iter().enumerate() {
+    for (i, path) in fallback_font_paths().iter().enumerate() {
         if linux && added {
             break;
         }
@@ -278,5 +252,106 @@ fn install_fallback_fonts(ctx: &egui::Context) {
             families,
         ));
         added = true;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+    [
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect()
+}
+
+/// Microsoft YaHei, Yu Gothic and Malgun Gothic ship with Windows 10+, in
+/// the Windows folder, which need not be on C:.
+#[cfg(windows)]
+fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+    let windows = std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("WINDIR"))
+        .map_or_else(|| r"C:\Windows".into(), std::path::PathBuf::from);
+    ["msyh.ttc", "YuGothM.ttc", "malgun.ttf"]
+        .into_iter()
+        .map(|name| windows.join("Fonts").join(name))
+        .collect()
+}
+
+/// Noto CJK covers all three; its path differs between distributions, so
+/// the usual places are tried first, then whatever fontconfig knows for
+/// Chinese. One is enough, and each is large.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<std::path::PathBuf> = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
+    if !paths.iter().any(|p| p.is_file()) {
+        paths.extend(fontconfig_cjk_fonts());
+    }
+    paths
+}
+
+/// Font files fontconfig lists as covering Chinese, if it is installed.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn fontconfig_cjk_fonts() -> Vec<std::path::PathBuf> {
+    let Ok(out) = std::process::Command::new("fc-list")
+        .args([":lang=zh", "file"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_fc_list(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `fc-list … file` prints `/path/to/font.ttc: ` per line.
+#[cfg(any(not(any(target_os = "macos", windows)), test))]
+fn parse_fc_list(output: &str) -> Vec<std::path::PathBuf> {
+    let mut paths: Vec<std::path::PathBuf> = output
+        .lines()
+        .map(|line| line.trim().trim_end_matches(':').trim())
+        .filter(|p| {
+            [".ttf", ".ttc", ".otf", ".otc"]
+                .iter()
+                .any(|ext| p.to_lowercase().ends_with(ext))
+        })
+        .map(Into::into)
+        .collect();
+    // fc-list's order is arbitrary; sorting keeps the choice stable.
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fc_list_output_is_parsed() {
+        let out = "/usr/share/fonts/b/NotoSansCJK-VF.ttc: \n\
+                   /usr/share/fonts/a/wqy-zenhei.ttc: \n\
+                   /usr/share/fonts/c/font.pcf.gz: \n\
+                   \n";
+        assert_eq!(
+            parse_fc_list(out),
+            vec![
+                std::path::PathBuf::from("/usr/share/fonts/a/wqy-zenhei.ttc"),
+                std::path::PathBuf::from("/usr/share/fonts/b/NotoSansCJK-VF.ttc"),
+            ]
+        );
     }
 }

@@ -3,7 +3,7 @@
 A native app, written in Rust, that writes down your meetings as they happen. It is made for the Mac and also runs on [Windows and Linux](#windows-and-linux). Everything runs on your own computer, and no audio leaves it.
 
 - **Me**: whatever your microphone hears.
-- **Others**: whatever the Mac plays, so every other participant counts as one speaker.
+- **Others**: whatever the computer plays, so every other participant counts as one speaker.
 - **Works with any meeting app**: Teams, Zoom, Meet, FaceTime and others. Nothing is installed inside the meeting app.
 - **Any language**: speech is written in the language it was spoken. You can mix languages, and each line is detected on its own.
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
@@ -64,7 +64,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | --- | --- | --- | --- |
 | *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
 | Whisper runs on | the GPU (Metal) | the processor, or the GPU with `--features vulkan` / `cuda` | the same as Windows |
-| Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%APPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
+| Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%LOCALAPPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
 | Folder dialog, file manager | Finder | Explorer | zenity or kdialog; the file manager over D-Bus, else `xdg-open` |
 
 On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If the status line shows more than "1× real time", pick **Small** or **Base** in Settings, or build with a GPU backend.
@@ -90,13 +90,13 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
    cargo build --release
    ```
 
-3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. CI also builds it on every push (artifact *Meeting-Transcriber-Windows-x86_64*).
+3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. On another PC it needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. CI also builds it on every push (artifact *Meeting-Transcriber-Windows-x86_64*).
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
 For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA).
 
-The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`.
+The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`. A release build is a windowed program, so the terminal shows its prompt again before the transcript is done; in Command Prompt, `start /wait meeting-transcriber.exe transcribe --me mic.wav` waits for it.
 
 ### Linux
 
@@ -177,11 +177,11 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 ## Settings
 
-Open **Settings** at the bottom of the sidebar. The app remembers your choices in `settings.txt` in `~/Library/Application Support/Meeting Transcriber` (Windows: `%APPDATA%\Meeting Transcriber`, Linux: `~/.local/share/Meeting Transcriber`).
+Open **Settings** at the bottom of the sidebar. The app remembers your choices in `settings.txt` in `~/Library/Application Support/Meeting Transcriber` (Windows: `%LOCALAPPDATA%\Meeting Transcriber`, Linux: `~/.local/share/Meeting Transcriber`).
 
 | Setting | Notes |
 | --- | --- |
-| Model | Every model with its size and whether it is downloaded: **Use**, **Download** (with Cancel), **Delete** and **Show in Finder**. **Large v3 Turbo** is the best balance on M-series Macs. **Large v3** (1031 MB) is more accurate but slower. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. Models can't be switched while recording. |
+| Model | Every model with its size and whether it is downloaded: **Use**, **Download** (with Cancel), **Delete** and **Show in Finder** (Explorer, or the file manager). **Large v3 Turbo** is the best balance on M-series Macs. **Large v3** (1031 MB) is more accurate but slower. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. Models can't be switched while recording. |
 | Models folder | Where models are stored. When you pick a new folder, the app offers to move the downloaded models there. If the app quits during the move, it finishes the move the next time it starts, and models not moved yet are still used from the old folder. Half-copied or half-downloaded files (`*.bin.part`) are deleted at startup. |
 | Meetings folder | Where meetings are saved and listed from. |
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |

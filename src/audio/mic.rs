@@ -131,11 +131,20 @@ fn open_stream(input: Input, tx: Sender<AudioPacket>) -> Result<(cpal::Stream, S
         Input::Loopback => Paced::with_silence_fill(converter, config.sample_rate()),
     };
     let paced = Arc::new(Mutex::new(paced));
+    // Core Audio and WASAPI hand out f32, but an ALSA hardware device may
+    // offer only integers of some width (24-bit is common).
+    let (cfg, feed) = (config.config(), paced.clone());
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build::<f32>(&device, config.config(), paced.clone(), input)?,
-        SampleFormat::I16 => build::<i16>(&device, config.config(), paced.clone(), input)?,
-        SampleFormat::I32 => build::<i32>(&device, config.config(), paced.clone(), input)?,
-        SampleFormat::U16 => build::<u16>(&device, config.config(), paced.clone(), input)?,
+        SampleFormat::F32 => build::<f32>(&device, cfg, feed, input)?,
+        SampleFormat::F64 => build::<f64>(&device, cfg, feed, input)?,
+        SampleFormat::I8 => build::<i8>(&device, cfg, feed, input)?,
+        SampleFormat::I16 => build::<i16>(&device, cfg, feed, input)?,
+        SampleFormat::I24 => build::<cpal::I24>(&device, cfg, feed, input)?,
+        SampleFormat::I32 => build::<i32>(&device, cfg, feed, input)?,
+        SampleFormat::U8 => build::<u8>(&device, cfg, feed, input)?,
+        SampleFormat::U16 => build::<u16>(&device, cfg, feed, input)?,
+        SampleFormat::U24 => build::<cpal::U24>(&device, cfg, feed, input)?,
+        SampleFormat::U32 => build::<u32>(&device, cfg, feed, input)?,
         other => bail!("unsupported {} sample format {other}", input.noun()),
     };
     stream.play().with_context(|| match input {
