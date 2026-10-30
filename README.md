@@ -84,6 +84,10 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
+**Download:** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/teams-meeting-plugin/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+
+To build it yourself instead:
+
 1. Install the build tools, once:
    - [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with **Desktop development with C++**
    - [Rust](https://rustup.rs) (the default MSVC toolchain)
@@ -103,7 +107,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 3. Run `target\release\meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. On another PC it needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have.
 
-   To hand it to someone else, `.\scripts\package-windows.ps1` builds it and zips it with a short README into `target\release\package\Meeting-Transcriber-Windows-x86_64.zip` (extra arguments such as `--features vulkan` go to the build). CI does the same on every push (artifact *Meeting-Transcriber-Windows-x86_64*), so you can also download a ready-built zip from the Actions page and skip steps 1 and 2.
+   To hand it to someone else, `.\scripts\package-windows.ps1` builds it and zips it with a short README into `target\release\package\Meeting-Transcriber-Windows-x86_64.zip` (extra arguments such as `--features vulkan` go to the build). CI does the same on every push (artifact *Meeting-Transcriber-Windows-x86_64*).
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
@@ -278,6 +282,13 @@ On Linux, `meeting-transcriber dictate start|stop|toggle` starts and stops dicta
 cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings, meeting files, dictation
 cargo clippy --all-targets
 cargo run --release
+```
+
+To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages to a new [GitHub release](https://github.com/PatrickSun93/teams-meeting-plugin/releases):
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 To test without a meeting, these variables replace the live sources with WAV files played in real time:
