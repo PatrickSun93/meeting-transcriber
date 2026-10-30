@@ -2,12 +2,14 @@
 name = "meeting-transcriber"
 version = "0.1.0"
 edition = "2024"
-description = "Live meeting transcription on macOS: your mic is 'Me', the Mac's audio is 'Others'. Local Whisper."
+description = "Live meeting transcription on macOS, Windows and Linux: your mic is 'Me', the computer's audio is 'Others'. Local Whisper."
 license = "MIT"
 publish = false
 
 [dependencies]
 anyhow = "1"
+# Already built for egui's clipboard; dictation copies from its own threads.
+arboard = { version = "3", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cpal = "0.18"
 crossbeam-channel = "0.5"
@@ -17,9 +19,65 @@ hound = "3"
 ureq = "3"
 whisper-rs = "0.16"
 
+[features]
+# Whisper on the GPU for Windows and Linux builds (macOS always uses Metal).
+# Building needs the Vulkan SDK or the CUDA toolkit.
+vulkan = ["whisper-rs/vulkan"]
+cuda = ["whisper-rs/cuda"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = "11"
 whisper-rs = { version = "0.16", features = ["metal"] }
+# Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item and the
+# sounds (AppKit).
+# All already built for winit and eframe.
+core-foundation = "0.9"
+core-graphics = "0.23"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSButton",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSSound",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSView",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+
+# The Explorer folder dialog (COM); for dictation, the keyboard hook and
+# Ctrl+V, the tray icon, sounds and the startup entry. Already built for
+# cpal's WASAPI backend.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Dictation on Linux: the hotkey and Ctrl+V on X11 (XInput 2, XTest), and
+# over D-Bus the Wayland shortcuts portal and the tray icon. Both already
+# built for arboard and AccessKit.
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+zbus = "5"
 
 [profile.release]
 lto = "thin"

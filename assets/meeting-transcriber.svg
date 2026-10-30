@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Meeting Transcriber: a microphone (Me, blue) beside a speaker wave (Others, orange). -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#25252b"/>
+  <rect x="34" y="26" width="28" height="48" rx="14" fill="#4084ee"/>
+  <path d="M26 62a22 22 0 0 0 44 0" fill="none" stroke="#4084ee" stroke-width="7" stroke-linecap="round"/>
+  <path d="M48 84v14M36 100h24" fill="none" stroke="#4084ee" stroke-width="7" stroke-linecap="round"/>
+  <path d="M84 44a20 20 0 0 1 0 28M94 34a34 34 0 0 1 0 48" fill="none" stroke="#e88e28" stroke-width="7" stroke-linecap="round"/>
+</svg>

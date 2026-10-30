@@ -3,6 +3,7 @@
 pub mod dsp;
 mod file;
 mod mic;
+mod silence;
 mod system;
 
 use crossbeam_channel::Sender;

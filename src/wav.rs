@@ -9,7 +9,7 @@ use crate::audio::AudioPacket;
 use crate::audio::dsp::{Resampler, SAMPLE_RATE, interleaved_to_mono};
 use crate::chunker::ChunkerConfig;
 use crate::session::{Router, SessionConfig};
-use crate::transcriber::{Job, JobQueue, Output, SpeechToText, run_job};
+use crate::transcriber::{ChunkJob, Job, JobQueue, Output, SpeechToText, run_job};
 use crate::transcript::{Line, Speaker, Transcript};
 
 /// Reads a WAV file as 16 kHz mono.
@@ -49,9 +49,10 @@ pub fn transcribe_tracks(
         time_offset: 0.0,
         first_utterance: 0,
         language: language.map(str::to_string),
+        mute_me: Default::default(),
     };
     let mut router = Router::new(&cfg);
-    let mut jobs: Vec<Job> = Vec::new();
+    let mut jobs: Vec<ChunkJob> = Vec::new();
     let packet = (SAMPLE_RATE / 10) as usize;
     let tracks = [
         (Speaker::Me, me.unwrap_or(&[])),
@@ -76,12 +77,12 @@ pub fn transcribe_tracks(
 
     let mut queue = JobQueue::default();
     for job in jobs {
-        queue.push(job);
+        queue.push(Job::Chunk(job));
     }
     // `run_job` reports timing on this channel; offline mode does not need it.
     let (speed_tx, _speed_rx) = crossbeam_channel::unbounded();
     let mut transcript = Transcript::default();
-    while let Some(job) = queue.pop() {
+    while let Some(Job::Chunk(job)) = queue.pop() {
         match run_job(engine, job, &speed_tx) {
             Output::Final {
                 line: Some(line),

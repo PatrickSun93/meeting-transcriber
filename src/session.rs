@@ -1,7 +1,7 @@
 //! A recording session: captures -> chunkers -> transcriber jobs.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -11,7 +11,7 @@ use crossbeam_channel::{Receiver, Sender};
 use crate::audio::dsp::{SAMPLE_RATE, rms};
 use crate::audio::{AudioPacket, Capture, fake_source, start_file, start_mic, start_system_audio};
 use crate::chunker::{Chunker, ChunkerConfig};
-use crate::transcriber::Job;
+use crate::transcriber::{ChunkJob, Job};
 use crate::transcript::Speaker;
 
 /// Live input levels for the meters, stored as f32 bits.
@@ -38,6 +38,9 @@ pub struct SessionConfig {
     pub first_utterance: u64,
     /// None for automatic language detection, or a code such as "en".
     pub language: Option<String>,
+    /// Set while the dictation hotkey is held: Me is heard as silence, so
+    /// what is dictated stays out of the meeting.
+    pub mute_me: Arc<AtomicBool>,
 }
 
 pub struct Session {
@@ -128,7 +131,7 @@ fn spawn_router(
                 levels.set(packet.speaker, rms(&packet.samples));
                 let elapsed = started.elapsed().as_secs_f32();
                 for job in router.push(packet, elapsed) {
-                    let _ = jobs.send(job);
+                    let _ = jobs.send(Job::Chunk(job));
                 }
             };
             loop {
@@ -146,7 +149,7 @@ fn spawn_router(
                 handle(packet, &mut router);
             }
             for job in router.flush() {
-                let _ = jobs.send(job);
+                let _ = jobs.send(Job::Chunk(job));
             }
             levels.set(Speaker::Me, 0.0);
             levels.set(Speaker::Others, 0.0);
@@ -166,6 +169,7 @@ pub struct Router {
     sources: [Source; 2],
     time_offset: f32,
     language: Option<String>,
+    mute_me: Arc<AtomicBool>,
 }
 
 impl Router {
@@ -182,12 +186,17 @@ impl Router {
             sources: [source(Speaker::Me), source(Speaker::Others)],
             time_offset: cfg.time_offset,
             language: cfg.language.clone(),
+            mute_me: cfg.mute_me.clone(),
         }
     }
 
     /// `elapsed`: session seconds when the packet arrived.
-    pub fn push(&mut self, packet: AudioPacket, elapsed: f32) -> Vec<Job> {
+    pub fn push(&mut self, mut packet: AudioPacket, elapsed: f32) -> Vec<ChunkJob> {
         let speaker = packet.speaker;
+        // Silence rather than nothing, so Me's clock keeps running.
+        if speaker == Speaker::Me && self.mute_me.load(Ordering::Relaxed) {
+            packet.samples.fill(0.0);
+        }
         let language = &self.language;
         let source = &mut self.sources[speaker.index()];
         let packet_seconds = packet.samples.len() as f32 / SAMPLE_RATE as f32;
@@ -200,7 +209,7 @@ impl Router {
             .into_iter()
             .map(|mut chunk| {
                 chunk.start += offset;
-                Job {
+                ChunkJob {
                     speaker,
                     chunk,
                     language: language.clone(),
@@ -209,13 +218,13 @@ impl Router {
             .collect()
     }
 
-    pub fn flush(&mut self) -> Vec<Job> {
+    pub fn flush(&mut self) -> Vec<ChunkJob> {
         let mut out = Vec::new();
         for (speaker, source) in [Speaker::Me, Speaker::Others].into_iter().zip(&mut self.sources) {
             let offset = source.offset.unwrap_or(self.time_offset);
             out.extend(source.chunker.flush().into_iter().map(|mut chunk| {
                 chunk.start += offset;
-                Job {
+                ChunkJob {
                     speaker,
                     chunk,
                     language: self.language.clone(),
@@ -242,6 +251,7 @@ mod tests {
             time_offset: 100.0,
             first_utterance: 5,
             language: Some("en".into()),
+            mute_me: Arc::default(),
         }
     }
 
@@ -270,6 +280,22 @@ mod tests {
         assert_ne!(me.chunk.utterance, others.chunk.utterance);
         assert!(me.chunk.utterance >= 5);
         assert_eq!(me.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn me_is_silent_while_dictating() {
+        let cfg = cfg();
+        let mute = cfg.mute_me.clone();
+        let mut r = Router::new(&cfg);
+        mute.store(true, Ordering::Relaxed);
+        let mut jobs = r.push(packet(Speaker::Me, 2.0, true), 2.0);
+        jobs.extend(r.push(packet(Speaker::Others, 2.0, true), 2.0));
+        mute.store(false, Ordering::Relaxed);
+        jobs.extend(r.push(packet(Speaker::Me, 1.0, false), 3.0));
+        jobs.extend(r.push(packet(Speaker::Others, 1.0, false), 3.0));
+        jobs.extend(r.flush());
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].speaker, Speaker::Others);
     }
 
     #[test]

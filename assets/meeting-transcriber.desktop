@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Meeting Transcriber
+Comment=Live meeting transcription with a local Whisper model
+Exec=meeting-transcriber
+Icon=meeting-transcriber
+Terminal=false
+Categories=AudioVideo;Audio;Office;
+# Matches the window's app id (src/main.rs), so the launcher and the
+# window share one icon in the dock.
+StartupWMClass=meeting-transcriber

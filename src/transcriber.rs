@@ -1,8 +1,10 @@
-//! Runs speech-to-text on a background thread.
+//! Runs speech-to-text on a background thread, one engine for meetings and
+//! dictation alike.
 //!
-//! Final chunks are always transcribed, in order. Partial chunks only drive
-//! the live preview, so when the engine falls behind, older partials are
-//! skipped and only the newest one per speaker is kept.
+//! Dictation comes first: someone is waiting for the text to appear. Final
+//! chunks are always transcribed, in order. Partial chunks only drive the
+//! live preview, so when the engine falls behind, older partials are skipped
+//! and only the newest one per speaker is kept.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -25,9 +27,33 @@ pub struct Recognized {
 pub trait SpeechToText: Send {
     /// `language`: None to detect it, or a code such as "en" or "zh".
     fn transcribe(&mut self, samples: &[f32], language: Option<&str>) -> Result<Recognized>;
+
+    /// Like `transcribe`, with text that steers spelling and style (names,
+    /// simplified Chinese, …). Engines without prompts ignore it.
+    fn transcribe_with_prompt(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<Recognized> {
+        let _ = prompt;
+        self.transcribe(samples, language)
+    }
 }
 
-/// Whisper via whisper.cpp; uses the GPU through Metal on Apple Silicon.
+/// The GPU backend whisper.cpp was built with, if any: Metal on macOS,
+/// Vulkan or CUDA when the matching feature is on.
+pub const GPU: Option<&str> = if cfg!(target_os = "macos") {
+    Some("Metal")
+} else if cfg!(feature = "cuda") {
+    Some("CUDA")
+} else if cfg!(feature = "vulkan") {
+    Some("Vulkan")
+} else {
+    None
+};
+
+/// Whisper via whisper.cpp, on the GPU when it was built with one (see `GPU`).
 pub struct WhisperEngine {
     state: whisper_rs::WhisperState,
     threads: i32,
@@ -52,10 +78,22 @@ impl WhisperEngine {
 
 impl SpeechToText for WhisperEngine {
     fn transcribe(&mut self, samples: &[f32], language: Option<&str>) -> Result<Recognized> {
+        self.transcribe_with_prompt(samples, language, None)
+    }
+
+    fn transcribe_with_prompt(
+        &mut self,
+        samples: &[f32],
+        language: Option<&str>,
+        prompt: Option<&str>,
+    ) -> Result<Recognized> {
         use whisper_rs::{FullParams, SamplingStrategy};
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(language.unwrap_or("auto")));
+        if let Some(prompt) = prompt.filter(|p| !p.trim().is_empty()) {
+            params.set_initial_prompt(prompt);
+        }
         params.set_n_threads(self.threads);
         params.set_translate(false);
         params.set_no_context(true);
@@ -93,22 +131,46 @@ impl SpeechToText for WhisperEngine {
     }
 }
 
+/// A piece of a meeting to transcribe.
 #[derive(Debug, Clone)]
-pub struct Job {
+pub struct ChunkJob {
     pub speaker: Speaker,
     pub chunk: Chunk,
     pub language: Option<String>,
 }
 
-/// Pending work: finals in arrival order, plus the newest partial per speaker.
+/// A held-hotkey recording. Its result goes to `reply`, not to the
+/// worker's outputs, so it reaches the dictation thread even while the
+/// window (which reads the outputs) is hidden.
+#[derive(Debug)]
+pub struct DictationJob {
+    pub samples: Vec<f32>,
+    pub language: Option<String>,
+    pub prompt: Option<String>,
+    pub reply: Sender<Output>,
+}
+
+#[derive(Debug)]
+pub enum Job {
+    Chunk(ChunkJob),
+    Dictation(DictationJob),
+}
+
+/// Pending work: dictations, then finals in arrival order, plus the newest
+/// partial per speaker.
 #[derive(Default)]
 pub struct JobQueue {
-    finals: VecDeque<Job>,
-    partials: [Option<Job>; 2],
+    dictations: VecDeque<DictationJob>,
+    finals: VecDeque<ChunkJob>,
+    partials: [Option<ChunkJob>; 2],
 }
 
 impl JobQueue {
     pub fn push(&mut self, job: Job) {
+        let job = match job {
+            Job::Dictation(d) => return self.dictations.push_back(d),
+            Job::Chunk(job) => job,
+        };
         let slot = job.speaker.index();
         match job.chunk.kind {
             ChunkKind::Final => {
@@ -126,8 +188,11 @@ impl JobQueue {
     }
 
     pub fn pop(&mut self) -> Option<Job> {
+        if let Some(d) = self.dictations.pop_front() {
+            return Some(Job::Dictation(d));
+        }
         if let Some(job) = self.finals.pop_front() {
-            return Some(job);
+            return Some(Job::Chunk(job));
         }
         // Serve whichever waiting partial started earlier.
         let pick = match (&self.partials[0], &self.partials[1]) {
@@ -136,11 +201,11 @@ impl JobQueue {
             (None, Some(_)) => 1,
             (None, None) => return None,
         };
-        self.partials[pick].take()
+        self.partials[pick].take().map(Job::Chunk)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.finals.is_empty() && self.partials.iter().all(Option::is_none)
+        self.dictations.is_empty() && self.finals.is_empty() && self.partials.iter().all(Option::is_none)
     }
 }
 
@@ -167,6 +232,9 @@ pub enum Output {
         seconds: f32,
     },
     Error(String),
+    /// A dictation's text as Whisper wrote it, or why it failed. Sent on
+    /// the job's own `reply` channel.
+    Dictation(Result<Recognized, String>),
 }
 
 /// Starts the worker: it loads the engine, sends `Ready` (or `LoadFailed`),
@@ -204,7 +272,17 @@ pub fn spawn_worker(
                 while let Ok(job) = jobs.try_recv() {
                     queue.push(job);
                 }
-                let Some(job) = queue.pop() else { continue };
+                let job = match queue.pop() {
+                    Some(Job::Chunk(job)) => job,
+                    Some(Job::Dictation(d)) => {
+                        let result =
+                            engine.transcribe_with_prompt(&d.samples, d.language.as_deref(), d.prompt.as_deref());
+                        // The dictation thread may have given up waiting.
+                        let _ = d.reply.send(Output::Dictation(result.map_err(|e| format!("{e:#}"))));
+                        continue;
+                    }
+                    None => continue,
+                };
                 let output = run_job(engine.as_mut(), job, &outputs);
                 if outputs.send(output).is_err() {
                     break;
@@ -216,8 +294,8 @@ pub fn spawn_worker(
 }
 
 /// Transcribes one job. Timing for finals is sent on `outputs` as `Speed`.
-pub fn run_job(engine: &mut dyn SpeechToText, job: Job, outputs: &Sender<Output>) -> Output {
-    let Job {
+pub fn run_job(engine: &mut dyn SpeechToText, job: ChunkJob, outputs: &Sender<Output>) -> Output {
+    let ChunkJob {
         speaker,
         chunk,
         language,
@@ -257,7 +335,7 @@ mod tests {
     use super::*;
 
     fn job(speaker: Speaker, utterance: u64, kind: ChunkKind, start: f32) -> Job {
-        Job {
+        Job::Chunk(ChunkJob {
             speaker,
             chunk: Chunk {
                 utterance,
@@ -266,11 +344,23 @@ mod tests {
                 samples: vec![0.0; 16_000],
             },
             language: None,
-        }
+        })
+    }
+
+    fn dictation(samples: usize, reply: Sender<Output>) -> Job {
+        Job::Dictation(DictationJob {
+            samples: vec![0.0; samples],
+            language: None,
+            prompt: Some("Names: Patrick".into()),
+            reply,
+        })
     }
 
     fn describe(job: Option<Job>) -> Option<(Speaker, u64, ChunkKind)> {
-        job.map(|j| (j.speaker, j.chunk.utterance, j.chunk.kind))
+        match job? {
+            Job::Chunk(j) => Some((j.speaker, j.chunk.utterance, j.chunk.kind)),
+            Job::Dictation(_) => panic!("unexpected dictation"),
+        }
     }
 
     #[test]
@@ -301,6 +391,26 @@ mod tests {
         assert!(q.pop().is_none());
     }
 
+    #[test]
+    fn dictation_is_served_before_meeting_work() {
+        use ChunkKind::*;
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut q = JobQueue::default();
+        q.push(job(Speaker::Me, 0, Final, 0.0));
+        q.push(job(Speaker::Others, 1, Partial, 0.5));
+        q.push(dictation(100, tx.clone()));
+        q.push(dictation(200, tx));
+        for expected in [100, 200] {
+            match q.pop() {
+                Some(Job::Dictation(d)) => assert_eq!(d.samples.len(), expected),
+                other => panic!("expected a dictation, got {other:?}"),
+            }
+        }
+        assert_eq!(describe(q.pop()), Some((Speaker::Me, 0, Final)));
+        assert_eq!(describe(q.pop()), Some((Speaker::Others, 1, Partial)));
+        assert!(q.is_empty());
+    }
+
     struct Fake;
     impl SpeechToText for Fake {
         fn transcribe(&mut self, samples: &[f32], language: Option<&str>) -> Result<Recognized> {
@@ -309,6 +419,37 @@ mod tests {
                 language: Some(language.unwrap_or("en").into()),
             })
         }
+
+        fn transcribe_with_prompt(
+            &mut self,
+            samples: &[f32],
+            language: Option<&str>,
+            prompt: Option<&str>,
+        ) -> Result<Recognized> {
+            let mut r = self.transcribe(samples, language)?;
+            r.text += prompt.unwrap_or_default();
+            Ok(r)
+        }
+    }
+
+    #[test]
+    fn dictation_result_goes_to_its_reply_channel() {
+        let (job_tx, job_rx) = crossbeam_channel::unbounded();
+        let (out_tx, out_rx) = crossbeam_channel::unbounded();
+        let (reply_tx, reply_rx) = crossbeam_channel::unbounded();
+        let handle = spawn_worker(|| Ok(Box::new(Fake)), job_rx, out_tx, || {});
+        job_tx.send(dictation(8_000, reply_tx)).unwrap();
+        drop(job_tx);
+        handle.join().unwrap();
+        assert_eq!(
+            reply_rx.recv().unwrap(),
+            Output::Dictation(Ok(Recognized {
+                text: " 8000 samples Names: Patrick".into(),
+                language: Some("en".into()),
+            }))
+        );
+        // Only Ready reached the meeting outputs.
+        assert_eq!(out_rx.iter().collect::<Vec<_>>(), [Output::Ready]);
     }
 
     #[test]

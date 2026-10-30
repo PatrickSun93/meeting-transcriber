@@ -2,7 +2,10 @@
 # Builds "Meeting Transcriber.app" in target/release/bundle.
 # macOS asks for microphone and screen/system-audio permission per app, so a
 # real .app bundle (with a stable identifier) is needed for the prompts and
-# for the permissions to be remembered.
+# for the permissions to be remembered. Dictation also needs Input Monitoring
+# (to see the hotkey) and Accessibility (to press ⌘V); those two have no
+# usage string, and are switched on in System Settings.
+# The /usr/lib/swift rpath the app needs is added by build.rs.
 #
 #   ./scripts/bundle-macos.sh            build the app
 #   ./scripts/bundle-macos.sh --install  also copy it to /Applications
@@ -41,7 +44,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Your microphone is transcribed as "Me".</string>
+  <string>Your microphone is transcribed as "Me" in meetings, and while you hold the dictation hotkey.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Meeting audio from other apps is transcribed as "Others".</string>
 </dict>
