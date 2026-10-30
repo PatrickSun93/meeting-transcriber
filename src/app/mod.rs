@@ -479,6 +479,7 @@ impl App {
             time_offset,
             first_utterance: self.next_utterance,
             language: self.language.map(str::to_string),
+            mute_me: Default::default(),
         };
         let first_utterance = self.next_utterance;
         self.next_utterance += 10_000_000;
@@ -639,6 +640,8 @@ impl App {
             Output::Error(e) => self.errors.push(e),
             // Only meaningful for the current engine; see poll_engine.
             Output::Ready | Output::LoadFailed(_) => {}
+            // Goes to the dictation thread, never here.
+            Output::Dictation(_) => {}
         }
         false
     }
