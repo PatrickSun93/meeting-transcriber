@@ -1,100 +1,119 @@
-# Teams Meeting Transcription (local Whisper)
+# Meeting Transcriber
 
-A Microsoft Teams app that transcribes what you say in a meeting. It runs as a meeting side panel or as a personal tab. Speech is turned into text on your own Mac by an OpenAI Whisper model, so audio never goes to a cloud service.
+A native Mac app, written in Rust, that writes down your meetings as they happen. Everything runs on your own Mac, and no audio leaves it.
+
+- **Me**: whatever your microphone hears.
+- **Others**: whatever the Mac plays, so every other participant counts as one speaker.
+- **Works with any meeting app**: Teams, Zoom, Meet, FaceTime and others. Nothing is installed inside the meeting app.
+- **Any language**: speech is written in the language it was spoken. You can mix languages, and each line is detected on its own.
+- **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
+
+Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal). It uses the `large-v3-turbo` model by default.
 
 ```
-Teams tab (your mic) --16 kHz audio chunks--> local server (https://localhost:3001) --> Whisper --> text
+ microphone ──► Me ─────┐
+                        ├─► chunk at pauses ─► Whisper (Metal GPU) ─► transcript window + file
+ Mac audio ───► Others ─┘
+ (ScreenCaptureKit)
 ```
 
-**What it does today:** it captures **your microphone only** and labels each line with your Teams name. Other participants are not transcribed. Teams does not let a tab app read the meeting's audio; that needs a bot built on the Graph media APIs.
+## Install (Mac, Apple Silicon, macOS 13 or newer)
 
-## Setup on a Mac
+1. Install the build tools, once:
 
-You need:
+   ```bash
+   xcode-select --install
+   ```
 
-- **Node.js 18 or newer:** `brew install node`
-- **mkcert**, to make a certificate Teams will trust: `brew install mkcert`
-- **A Teams account that may upload custom apps.** Work and school accounts need this allowed by the admin. The free Microsoft 365 Developer Program tenant allows it. The free personal Teams app does not.
+   ```bash
+   brew install cmake
+   ```
 
-### 1. Install
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
 
-```bash
-git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
-cd teams-meeting-plugin
-npm install
-cp .env.example .env
-```
+2. Build the app and copy it to Applications:
 
-### 2. Create the HTTPS certificate (once)
+   ```bash
+   git clone https://github.com/PatrickSun93/teams-meeting-plugin.git
+   cd teams-meeting-plugin
+   ./scripts/bundle-macos.sh --install
+   ```
 
-Teams only loads apps over HTTPS. This adds a local certificate authority to your keychain and asks for your Mac password once:
+   The first build compiles whisper.cpp and takes a few minutes.
 
-```bash
-npm run certs
-```
+3. Open **Meeting Transcriber** from Applications.
 
-### 3. Build and start the server
+4. Click **Download (547 MB)** to fetch the Whisper model. You only do this once.
 
-```bash
-npm run build
-npm start
-```
+## First run: permissions
 
-The first start downloads the Whisper model (about 75 MB for `whisper-base.en`) into `./models`. Wait for `Whisper model ... ready`.
+macOS asks for two permissions:
 
-To check it outside Teams, open https://localhost:3001 in Safari or Chrome, press **Start**, and talk. Text appears after each pause.
+- **Microphone**: needed for *Me*. Click Allow when asked.
+- **Screen & System Audio Recording**: needed for *Others*. The app only uses the audio. Allow it in **System Settings → Privacy & Security → Screen & System Audio Recording**, then **quit and reopen** the app.
 
-The server prints about 100 `[W:onnxruntime ... Removing initializer ...]` lines when the model loads. They are harmless.
+If *Others* stays silent, this permission is almost always the reason. After you rebuild the app, macOS may treat it as a new app; switch the permission off and on again.
 
-### 4. Build the Teams app package
+## Using it
 
-```bash
-npm run package
-```
+1. Press **Start** before or during your meeting.
+2. Talk. Grey italic text is the live guess. It becomes a normal line when the speaker pauses.
+3. Press **Stop** when you're done. Any remaining speech is still transcribed.
 
-This creates `dist/meeting-transcription.zip`.
+Every line is saved as you go to `~/Documents/Meeting Transcripts/Meeting <date> <time>.txt`. **Show file** opens that folder, **Copy all** copies the transcript, and **New transcript** clears the window and starts a new file.
 
-### 5. Upload it to Teams
+**Headphones or speakers?** With headphones, your microphone only hears you. With speakers, it also hears the others. **Remove speaker echo** (on by default) drops your lines that repeat what Others said at the same moment. Short replies such as "Yes." are always kept. Headphones still give the cleanest result.
 
-In Teams: **Apps → Manage your apps → Upload an app → Upload a custom app**, then pick `dist/meeting-transcription.zip`.
+The app remembers your settings between launches.
 
-### 6. Use it
-
-- **Personal tab:** open the app from the Apps list and use the **Transcription** tab.
-- **In a meeting:** in the meeting window, click **Apps (+)**, choose **Meeting Transcription**, and click **Save**. Open it from the toolbar as a side panel.
-
-Press **Start**. The first time, macOS asks to let Teams use the microphone. If you missed that prompt, allow it in **System Settings → Privacy & Security → Microphone → Microsoft Teams**, then restart Teams.
-
-Keep `npm start` running while you use the app. The tab talks to the server on your Mac.
-
-## Configuration (`.env`)
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `PORT` | `3001` | If you change it, rebuild the package with the matching URL. |
-| `WHISPER_MODEL` | `Xenova/whisper-base.en` | `whisper-tiny.en` is faster; `whisper-small.en` is more accurate but slower; `whisper-base` handles other languages. |
-| `APP_URL` | `https://localhost:3001` | The URL written into the Teams package. You can also pass `npm run package -- --url https://...`. |
-
-## Troubleshooting
-
-| Symptom | Fix |
+| Setting | Notes |
 | --- | --- |
-| The tab in Teams is blank or shows an error | Is `npm start` running? Does https://localhost:3001 open in Safari without a certificate warning? If not, run `npm run certs` again and restart the server. |
-| "Upload a custom app" is missing | Your organisation blocks custom apps. Use a Microsoft 365 developer tenant, or ask your admin to allow it. |
-| "Cannot reach the local server" | Start the server with `npm start`. |
-| Start stays greyed out | The model is still downloading or loading. Watch the server log. |
-| Microphone permission denied | See step 6. |
-| Odd words like "Thank you." in silence | These are known Whisper hallucinations. The server already filters the common ones. |
+| Model | **Large v3 Turbo** is the best balance on M-series Macs. **Full precision** is slightly more accurate. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. |
+| Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
+| Me / Others | Turn off a source you don't need. |
+
+## Transcribe recordings
+
+The same binary transcribes WAV files from the command line, with the same speaker labels and echo removal:
+
+```bash
+"/Applications/Meeting Transcriber.app/Contents/MacOS/meeting-transcriber" transcribe --me mic.wav --others meeting.wav
+```
+
+`--model` accepts a model id (`large-v3-turbo-q5_0`, `base`, …) or a path to a `ggml-*.bin` file. `--language` accepts a code such as `en` or `zh`.
 
 ## Development
 
 ```bash
-npm test         # Jest tests
-npm run lint     # ESLint
-npm run build    # bundle the client into src/client/build
+cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings
+cargo clippy --all-targets
+cargo run --release
 ```
 
-The code layout is described in `.kiro/steering/structure.md`. The `browser-extension/` and `desktop-app/` folders hold earlier Google Meet and desktop work. They are not part of this demo.
+To test without a meeting, these variables replace the live sources with WAV files played in real time:
+
+```bash
+MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav cargo run --release
+```
+
+`MEETING_TRANSCRIBER_MODELS` points at a different model folder. The default is `~/Library/Application Support/Meeting Transcriber/models`.
+
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run.
+
+| File | Role |
+| --- | --- |
+| `src/audio/mic.rs` | Microphone capture (cpal / Core Audio) |
+| `src/audio/system.rs` | Mac audio capture (ScreenCaptureKit) |
+| `src/audio/dsp.rs` | Low-pass filter and resampling to 16 kHz mono |
+| `src/chunker.rs` | Splits speech at pauses; sends live partials |
+| `src/session.rs` | Connects the sources, chunkers and transcriber |
+| `src/transcriber.rs` | Whisper engine and job queue (finals first; stale partials dropped) |
+| `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
+| `src/app.rs` | The window (egui) |
+| `src/models.rs` | Model list and download |
+| `src/wav.rs` | Offline mode for WAV files |
 
 ## License
 

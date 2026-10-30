@@ -1,0 +1,125 @@
+use std::path::PathBuf;
+use std::time::Instant;
+
+use anyhow::{Context as _, Result, bail};
+use meeting_transcriber::models::{DEFAULT_MODEL, ModelInfo};
+use meeting_transcriber::transcriber::WhisperEngine;
+use meeting_transcriber::transcript::format_time;
+use meeting_transcriber::{app, wav};
+
+const USAGE: &str = "\
+Meeting Transcriber
+
+  meeting-transcriber
+      Opens the app window.
+
+  meeting-transcriber transcribe [--me FILE.wav] [--others FILE.wav]
+                                 [--model PATH_OR_ID] [--language CODE]
+      Transcribes recordings with the same pipeline, printing each line.
+      --me / --others take the microphone and meeting-audio tracks.
+      --model defaults to the downloaded large-v3-turbo-q5_0 model.
+      --language defaults to auto-detect (e.g. en, zh).
+";
+
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        None => run_app(),
+        Some("transcribe") => run_transcribe(&args[1..]),
+        Some("-h" | "--help" | "help") => {
+            print!("{USAGE}");
+            Ok(())
+        }
+        Some(other) => bail!("unknown command {other:?}\n\n{USAGE}"),
+    }
+}
+
+fn run_app() -> Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("Meeting Transcriber")
+            .with_inner_size([820.0, 640.0])
+            .with_min_inner_size([480.0, 320.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Meeting Transcriber",
+        options,
+        Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
+    )
+    .map_err(|e| anyhow::anyhow!("could not open the window: {e}"))
+}
+
+fn run_transcribe(args: &[String]) -> Result<()> {
+    let mut me = None;
+    let mut others = None;
+    let mut model = None;
+    let mut language = None;
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let mut value = || it.next().with_context(|| format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--me" => me = Some(PathBuf::from(value()?)),
+            "--others" => others = Some(PathBuf::from(value()?)),
+            "--model" => model = Some(value()?.clone()),
+            "--language" => language = Some(value()?.clone()),
+            other => bail!("unknown option {other:?}\n\n{USAGE}"),
+        }
+    }
+    if me.is_none() && others.is_none() {
+        bail!("give at least one of --me or --others\n\n{USAGE}");
+    }
+
+    let model_path = match model {
+        Some(m) => ModelInfo::by_id(&m).map_or_else(|| PathBuf::from(&m), |info| info.path()),
+        None => DEFAULT_MODEL.path(),
+    };
+    if !model_path.is_file() {
+        bail!(
+            "model not found at {}. Download it from the app, or pass --model /path/to/ggml-model.bin",
+            model_path.display()
+        );
+    }
+
+    let me = me.map(|p| wav::read_wav(&p)).transpose()?;
+    let others = others.map(|p| wav::read_wav(&p)).transpose()?;
+    let audio_seconds = me.iter().chain(&others).map(|t| t.len()).max().unwrap_or(0) as f32 / 16_000.0;
+
+    let loading = Instant::now();
+    let mut engine = WhisperEngine::load(&model_path)?;
+    eprintln!(
+        "Loaded {} in {:.1}s",
+        model_path.display(),
+        loading.elapsed().as_secs_f32()
+    );
+
+    let started = Instant::now();
+    let transcript = wav::transcribe_tracks(
+        &mut engine,
+        me.as_deref(),
+        others.as_deref(),
+        language.as_deref(),
+        |line| {
+            eprintln!(
+                "[{}] {}: {}{}",
+                format_time(line.start),
+                line.speaker.label(),
+                line.text,
+                line.language.as_deref().map(|l| format!("  ({l})")).unwrap_or_default()
+            );
+        },
+    )?;
+    let took = started.elapsed().as_secs_f32();
+    // Lines above were streamed as they finished; this is the final
+    // transcript after echo removal.
+    print!("{}", transcript.to_text());
+    eprintln!(
+        "{} lines, {:.1}s of audio in {:.1}s ({:.2}x real time), {} echo lines removed",
+        transcript.lines().len(),
+        audio_seconds,
+        took,
+        took / audio_seconds.max(0.001),
+        transcript.echo_removed
+    );
+    Ok(())
+}

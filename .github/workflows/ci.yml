@@ -5,16 +5,34 @@ on:
   pull_request:
 
 jobs:
-  test:
+  macos:
+    # Apple Silicon runner: builds the real app with Metal and ScreenCaptureKit.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: ./scripts/bundle-macos.sh
+      - name: Zip the app
+        run: cd target/release/bundle && ditto -c -k --keepParent "Meeting Transcriber.app" Meeting-Transcriber-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-macOS
+          path: target/release/bundle/Meeting-Transcriber-macOS.zip
+
+  linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - run: npm run build
-      - run: npm run package
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
