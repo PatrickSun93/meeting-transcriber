@@ -40,6 +40,9 @@ echo "Open Meeting Transcriber from the app menu, or run: meeting-transcriber"
 if ! command -v parec >/dev/null 2>&1; then
     echo "Note: recording Others needs parec (package pulseaudio-utils; libpulse on Arch)."
 fi
+if [[ -n "${WAYLAND_DISPLAY:-}" ]] && ! command -v wtype >/dev/null 2>&1 && ! command -v ydotool >/dev/null 2>&1; then
+    echo "Note: on Wayland, dictation pastes with wtype or ydotool; without them the text is only copied."
+fi
 if ! command -v zenity >/dev/null 2>&1 && ! command -v kdialog >/dev/null 2>&1; then
     echo "Note: without zenity or kdialog, folders are typed in instead of chosen in a dialog."
 fi
