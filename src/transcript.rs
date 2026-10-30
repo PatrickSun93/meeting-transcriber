@@ -248,13 +248,25 @@ impl Transcript {
         true
     }
 
-    pub fn to_text(&self) -> String {
-        let mut out = String::new();
-        for l in &self.lines {
-            let _ = writeln!(out, "[{}] {}: {}", format_time(l.start), l.speaker.label(), l.text);
-        }
-        out
+    /// Replaces everything with saved lines, e.g. when a meeting is opened.
+    pub fn set_lines(&mut self, mut lines: Vec<Line>) {
+        self.clear();
+        lines.sort_by(|a, b| a.start.total_cmp(&b.start));
+        self.lines = lines;
     }
+
+    pub fn to_text(&self) -> String {
+        lines_to_text(&self.lines)
+    }
+}
+
+/// `[mm:ss] Speaker: text`, one line each: the plain-text transcript format.
+pub fn lines_to_text(lines: &[Line]) -> String {
+    let mut out = String::new();
+    for l in lines {
+        let _ = writeln!(out, "[{}] {}: {}", format_time(l.start), l.speaker.label(), l.text);
+    }
+    out
 }
 
 pub fn format_time(seconds: f32) -> String {
@@ -413,5 +425,16 @@ mod tests {
         t.add_final(0, line(Speaker::Me, 3.0, "Hi."));
         t.add_final(0, line(Speaker::Others, 3725.0, "Bye."));
         assert_eq!(t.to_text(), "[00:03] Me: Hi.\n[1:02:05] Others: Bye.\n");
+    }
+
+    #[test]
+    fn set_lines_replaces_and_orders() {
+        let mut t = Transcript::default();
+        t.add_final(0, line(Speaker::Me, 1.0, "old"));
+        t.set_preview(Speaker::Others, 1, 2.0, Some("live".into()));
+        t.set_lines(vec![line(Speaker::Others, 9.0, "b"), line(Speaker::Me, 4.0, "a")]);
+        let texts: Vec<_> = t.lines().iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["a", "b"]);
+        assert!(t.preview(Speaker::Others).is_none());
     }
 }

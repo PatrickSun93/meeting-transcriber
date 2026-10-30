@@ -12,6 +12,8 @@ pub const ME_COLOR: Color32 = Color32::from_rgb(64, 132, 238);
 pub const OTHERS_COLOR: Color32 = Color32::from_rgb(232, 142, 40);
 pub const RECORD_RED: Color32 = Color32::from_rgb(228, 58, 52);
 pub const READY_GREEN: Color32 = Color32::from_rgb(52, 168, 90);
+/// Behind find-in-transcript results.
+pub const FIND_HIGHLIGHT: Color32 = Color32::from_rgb(255, 201, 40);
 
 /// Rounding for buttons and inputs; cards are a little rounder.
 const WIDGET_RADIUS: u8 = 7;

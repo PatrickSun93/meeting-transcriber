@@ -4,6 +4,7 @@
 pub mod app;
 pub mod audio;
 pub mod chunker;
+pub mod meeting;
 pub mod meetings;
 pub mod models;
 pub mod session;

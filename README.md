@@ -62,7 +62,43 @@ If *Others* stays silent, this permission is almost always the reason. After you
 2. Talk. Grey italic text is the live guess. It becomes a normal line when the speaker pauses.
 3. Press the button again (now a square) when you're done. Any remaining speech is still transcribed.
 
-Every line is saved as you go to `~/Documents/Meeting Transcripts/Meeting <date> <time>.txt` (the folder can be changed in Settings). **Show file** opens that folder, **Copy all** copies the transcript, and **New transcript** clears the window and starts a new file.
+Every line is saved as you go (the folder can be changed in Settings). Type notes in the **Notes** panel next to the transcript while you record; the **📝 Notes** button hides or shows it.
+
+## Meetings
+
+Each meeting is one Markdown file in `~/Documents/Meeting Transcripts`, named `2026-10-29 14-05 <Title>.md`:
+
+```markdown
+---
+title: "Weekly sync"
+date: 2026-10-29T14:05
+duration: 00:42:10
+languages: [en, zh]
+tags: [team, client]
+---
+
+# Weekly sync
+
+## Notes
+
+Your notes.
+
+## Transcript
+
+**[00:03] Me:** Hi, can you hear me?
+**[00:07] Others:** Yes, loud and clear.
+```
+
+There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summarize it with the assistant of your choice.
+
+- **Sidebar**: **New meeting**, a search box (titles and tags; `#tag` searches tags only), and every meeting grouped by Today, Yesterday and date. Right-click a meeting to **Rename**, **Show in Finder** or **Delete** it. While recording, other meetings can't be opened.
+- **Title and tags** are edited at the top of the page. Changing the title renames the file.
+- **Autosave**: changes are written a second after you stop typing (and at least every few seconds), when recording stops, when you switch meetings and when you quit.
+- **Continue a meeting**: open it and press record. The clock continues where it stopped.
+- **Edit anywhere**: the files work in Obsidian or any editor. Extra frontmatter keys are kept, and the list picks up changes within a few seconds. An open meeting reloads when its file changes, unless you have unsaved edits in the app.
+- **Reading a transcript**: show **All**, **Me** or **Others**; **Find in transcript** (⌘F) highlights matches, with Return / Shift-Return (or the arrows) for next and previous. Click a timestamp to copy that line, or right-click a line for more. Each meeting keeps its scroll position.
+- **Export**: **Copy all** as Markdown or plain text; **Export** saves a `.txt` next to the meeting, or a `.txt` / `.md` to a folder you pick.
+- **Old transcripts**: `Meeting <date> <time>.txt` files from earlier versions are listed (marked *txt*) and open read-only. **Convert to Markdown** makes a `.md` meeting from one and keeps the `.txt`.
 
 **Headphones or speakers?** With headphones, your microphone only hears you. With speakers, it also hears the others. **Remove speaker echo** (on by default) drops your lines that repeat what Others said at the same moment. Short replies such as "Yes." are always kept. Headphones still give the cleanest result.
 
@@ -74,7 +110,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | --- | --- |
 | Model | Every model with its size and whether it is downloaded: **Use**, **Download** (with Cancel), **Delete** and **Show in Finder**. **Large v3 Turbo** is the best balance on M-series Macs. **Large v3** (1031 MB) is more accurate but slower. **Small** and **Base** are faster but less accurate. The status line shows "Whisper N× real time", and anything below 1 keeps up live. Models can't be switched while recording. |
 | Models folder | Where models are stored. When you pick a new folder, the app offers to move the downloaded models there. |
-| Meetings folder | Where new transcripts are saved. |
+| Meetings folder | Where meetings are saved and listed from. |
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
@@ -92,7 +128,7 @@ The same binary transcribes WAV files from the command line, with the same speak
 ## Development
 
 ```bash
-cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings
+cargo test        # unit tests: audio, chunking, echo filter, scheduling, settings, meeting files
 cargo clippy --all-targets
 cargo run --release
 ```
@@ -117,14 +153,17 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/transcriber.rs` | Whisper engine and job queue (finals first; stale partials dropped) |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
-| `src/app/meeting_page.rs` | Record button, status, live transcript |
+| `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
+| `src/app/reader.rs` | Transcript reader: filter, find, copy |
+| `src/app/library.rs` | Open meeting: autosave, rename, delete, convert, export |
 | `src/app/settings_page.rs` | Models, folders, recognition options |
-| `src/app/sidebar.rs` | Navigation |
+| `src/app/sidebar.rs` | New meeting, search, meeting list, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
 | `src/app/platform.rs` | Finder and the folder picker |
 | `src/models.rs` | Model list, folders, download and moving |
 | `src/settings.rs` | Saved settings |
-| `src/meetings.rs` | Transcript folder and file names |
+| `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |
+| `src/meetings.rs` | Meetings folder: file names, listing, search, date groups |
 | `src/wav.rs` | Offline mode for WAV files |
 
 ## License

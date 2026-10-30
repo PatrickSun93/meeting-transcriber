@@ -1,9 +1,11 @@
-//! The meeting page: record button and status, the live transcript, and
-//! actions for the saved file.
+//! The meeting page: record button, editable title and tags, the transcript
+//! reader with the notes beside it, and actions for the file.
 
 use eframe::egui::{self, Align, Align2, FontId, Frame, Layout, Margin, RichText, Sense, Ui, Vec2};
 
+use super::library::{DEFAULT_TITLE, Format};
 use super::{App, Page, language_name, platform, theme};
+use crate::meeting;
 use crate::transcript::{Speaker, format_time};
 
 impl App {
@@ -21,6 +23,22 @@ impl App {
                 ..Margin::ZERO
             }))
             .show(ui, |ui| self.footer(ui));
+        let mut notes_open = self.reader.notes_open;
+        egui::Panel::right("notes_panel")
+            .resizable(true)
+            .default_size(300.0)
+            .size_range(200.0..=640.0)
+            .show_separator_line(false)
+            .frame(Frame::new().inner_margin(Margin {
+                left: 12,
+                ..Margin::ZERO
+            }))
+            .show_collapsible(ui, &mut notes_open, |ui| {
+                theme::card(ui)
+                    .inner_margin(Margin::symmetric(14, 12))
+                    .show(ui, |ui| self.notes_editor(ui));
+            });
+        self.reader.notes_open = notes_open;
         egui::CentralPanel::no_frame().show(ui, |ui| {
             theme::card(ui)
                 .inner_margin(Margin::symmetric(16, 12))
@@ -30,10 +48,16 @@ impl App {
 
     fn header(&mut self, ui: &mut Ui) {
         let recording = self.recording();
-        let ready = self.engine_ready();
+        let can_record = self.engine_ready() && !self.open.read_only();
         ui.horizontal(|ui| {
-            let hint = if recording { "Stop recording" } else { "Start recording" };
-            if theme::record_button(ui, recording, recording || ready)
+            let hint = if recording {
+                "Stop recording"
+            } else if self.open.read_only() {
+                "Convert to Markdown to continue this meeting"
+            } else {
+                "Start recording"
+            };
+            if theme::record_button(ui, recording, recording || can_record)
                 .on_hover_text(hint)
                 .clicked()
             {
@@ -45,24 +69,72 @@ impl App {
             }
             ui.add_space(10.0);
             ui.vertical(|ui| {
-                let title = self
-                    .save_path
-                    .as_ref()
-                    .and_then(|p| p.file_stem())
-                    .map_or_else(|| "New meeting".to_string(), |s| s.to_string_lossy().into_owned());
-                ui.label(RichText::new(title).size(18.0).strong());
+                // Leaves room for the meters on the right.
+                ui.set_max_width((ui.available_width() - 190.0).max(140.0));
+                self.title_field(ui);
                 ui.horizontal(|ui| self.status(ui));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.meters(ui));
         });
         ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| self.setup_line(ui));
+        ui.horizontal_wrapped(|ui| {
+            self.tags_field(ui);
+            ui.add_space(12.0);
+            self.setup_line(ui);
+        });
+    }
+
+    /// The title, edited in place. Old transcripts show theirs read-only.
+    fn title_field(&mut self, ui: &mut Ui) {
+        if self.open.read_only() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&self.open.meeting.title).size(18.0).strong());
+                theme::pill(ui, "txt  ·  read-only", ui.visuals().weak_text_color());
+            });
+            return;
+        }
+        let edit = egui::TextEdit::singleline(&mut self.open.meeting.title)
+            .font(FontId::proportional(18.0))
+            .hint_text("Meeting title")
+            .frame(Frame::NONE)
+            .margin(Margin::ZERO)
+            .desired_width(f32::INFINITY);
+        let response = ui.add(edit).on_hover_text("Click to rename");
+        if response.changed() {
+            self.mark_edited();
+        }
+        if response.lost_focus() {
+            let title = meeting::one_line(&self.open.meeting.title);
+            let title = if title.is_empty() {
+                DEFAULT_TITLE.to_string()
+            } else {
+                title
+            };
+            if title != self.open.meeting.title {
+                self.open.meeting.title = title;
+                self.mark_edited();
+            }
+        }
+    }
+
+    fn tags_field(&mut self, ui: &mut Ui) {
+        if self.open.read_only() {
+            return;
+        }
+        ui.weak("Tags");
+        let edit = egui::TextEdit::singleline(&mut self.open.tags_text)
+            .hint_text("team, client")
+            .desired_width(200.0);
+        if ui.add(edit).on_hover_text("Separate tags with commas").changed() {
+            self.open.meeting.tags = meeting::parse_tags_input(&self.open.tags_text);
+            self.mark_edited();
+        }
     }
 
     /// Status chip, plus Whisper speed once there is one.
     fn status(&mut self, ui: &mut Ui) {
         if let Some(session) = &self.session {
-            let t = session.started.elapsed().as_secs_f32();
+            let t = self.session_offset + session.started.elapsed().as_secs_f32();
             theme::pill(ui, &format!("●  Recording  {}", format_time(t)), theme::RECORD_RED);
             ui.weak(session.source_names.join(" + "));
         } else if self.download.as_ref().is_some_and(|d| d.model == self.model) {
@@ -79,6 +151,14 @@ impl App {
             theme::pill(ui, "Loading model…", theme::accent(ui));
         } else {
             theme::pill(ui, "●  Ready", theme::READY_GREEN);
+        }
+        let m = &self.open.meeting;
+        if !self.recording() && self.open.path.is_some() {
+            ui.weak(format!(
+                "{}  ·  {}",
+                m.date.format("%a %b %-d, %H:%M"),
+                meeting::format_duration(m.duration)
+            ));
         }
         if let Some(speed) = self.speed {
             ui.weak(format!("Whisper {speed:.2}× real time"))
@@ -154,93 +234,122 @@ impl App {
         }
     }
 
-    fn transcript_view(&mut self, ui: &mut Ui) {
+    /// Free-form notes, saved in the meeting file above the transcript.
+    fn notes_editor(&mut self, ui: &mut Ui) {
+        ui.set_width(ui.available_width());
+        theme::card_title(ui, "Notes");
+        if self.open.read_only() {
+            ui.weak("Old transcripts are read-only. Convert to Markdown to add notes.");
+            if ui.button("Convert to Markdown").clicked() {
+                self.convert_to_markdown();
+            }
+            return;
+        }
+        let height = ui.available_height();
         egui::ScrollArea::vertical()
-            .id_salt("transcript_scroll")
+            .id_salt(("notes", self.open.path.clone()))
             .auto_shrink(false)
-            .stick_to_bottom(true)
             .show(ui, |ui| {
-                if self.transcript.is_empty()
-                    && self.transcript.preview(Speaker::Me).is_none()
-                    && self.transcript.preview(Speaker::Others).is_none()
-                {
-                    empty_state(ui);
-                }
-                for line in self.transcript.lines() {
-                    ui.horizontal_top(|ui| {
-                        timestamp(ui, line.start);
-                        theme::speaker_pill(ui, line.speaker, false);
-                        ui.add(egui::Label::new(&line.text).wrap().selectable(true));
-                    });
-                    ui.add_space(2.0);
-                }
-                for speaker in [Speaker::Me, Speaker::Others] {
-                    if let Some(p) = self.transcript.preview(speaker) {
-                        ui.horizontal_top(|ui| {
-                            timestamp(ui, p.start);
-                            theme::speaker_pill(ui, speaker, true);
-                            ui.add(egui::Label::new(RichText::new(&p.text).italics().weak()).wrap());
-                        });
-                    }
+                let edit = egui::TextEdit::multiline(&mut self.open.meeting.notes)
+                    .id_salt("meeting_notes")
+                    .hint_text("Type notes here, also while recording.\nThey are saved with the transcript.")
+                    .frame(Frame::NONE)
+                    .margin(Margin::ZERO)
+                    .desired_width(f32::INFINITY);
+                if ui.add_sized([ui.available_width(), height], edit).changed() {
+                    self.mark_edited();
                 }
             });
     }
 
     fn footer(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let has_lines = !self.transcript.is_empty();
-            if ui.add_enabled(has_lines, egui::Button::new("Copy all")).clicked() {
-                ui.ctx().copy_text(self.transcript.to_text());
-            }
-            if let Some(path) = self.save_path.clone()
+            let has_content = !self.transcript.is_empty() || !self.open.meeting.notes.is_empty();
+            ui.add_enabled_ui(has_content, |ui| {
+                ui.menu_button("Copy all", |ui| {
+                    if ui.button("As Markdown (title, notes, transcript)").clicked() {
+                        ui.ctx().copy_text(self.export_text(Format::Markdown));
+                    }
+                    if ui.button("As plain text (transcript)").clicked() {
+                        ui.ctx().copy_text(self.export_text(Format::Text));
+                    }
+                });
+            });
+            if let Some(path) = self.open.path.clone()
                 && ui
                     .button("Show file")
                     .on_hover_text(path.display().to_string())
                     .clicked()
             {
+                self.save_open();
                 platform::reveal_in_finder(&path);
             }
-            if ui
-                .add_enabled(has_lines && !self.recording(), egui::Button::new("New transcript"))
-                .on_hover_text("Clears the window. The saved file is kept.")
-                .clicked()
+            ui.add_enabled_ui(has_content && !self.exporting(), |ui| self.export_menu(ui));
+            if self.open.read_only()
+                && ui
+                    .button("Convert to Markdown")
+                    .on_hover_text("Makes a .md meeting you can add notes to. The .txt file is kept.")
+                    .clicked()
             {
-                self.transcript.clear();
-                self.save_path = None;
+                self.convert_to_markdown();
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if let Some(path) = &self.save_path {
-                    ui.weak(format!(
-                        "Saving to {}",
-                        path.file_name().unwrap_or_default().to_string_lossy()
-                    ));
-                }
-                if self.transcript.echo_removed > 0 {
-                    ui.weak(format!("{} echo lines removed ·", self.transcript.echo_removed));
-                }
-            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| self.footer_status(ui));
         });
     }
-}
 
-/// A small fixed-width monospace time, so rows line up.
-fn timestamp(ui: &mut Ui, seconds: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(56.0, 20.0), Sense::hover());
-    ui.painter().text(
-        rect.left_center(),
-        Align2::LEFT_CENTER,
-        format_time(seconds),
-        FontId::monospace(12.0),
-        ui.visuals().weak_text_color(),
-    );
-}
+    fn export_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("Export", |ui| {
+            let dir = self.open_meeting_dir();
+            if !self.open.read_only() && ui.button("Save .txt next to the meeting").clicked() {
+                self.export_to(Format::Text, &dir);
+            }
+            if self.open.read_only() && ui.button("Convert to Markdown").clicked() {
+                self.convert_to_markdown();
+            }
+            ui.separator();
+            if ui.button("Export as .txt…").clicked() {
+                self.pick_export_folder(Format::Text);
+            }
+            if ui.button("Export as .md…").clicked() {
+                self.pick_export_folder(Format::Markdown);
+            }
+        });
+    }
 
-fn empty_state(ui: &mut Ui) {
-    ui.add_space(48.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new("No transcript yet").size(17.0).strong().weak());
-        ui.add_space(4.0);
-        ui.weak("Press the red button, then join or continue your meeting.");
-        ui.weak("Your microphone shows as Me; everything the Mac plays shows as Others.");
-    });
+    /// Notices, then whether everything is saved, right-aligned.
+    fn footer_status(&mut self, ui: &mut Ui) {
+        let saved = if self.open.read_only() {
+            "Read-only"
+        } else if self.open.unsaved_changes() {
+            "Saving…"
+        } else if self.open.path.is_some() {
+            "Saved"
+        } else {
+            "Not saved yet"
+        };
+        let hover = self.open.path.as_ref().map_or_else(
+            || "Saved once it has a title, notes or lines".into(),
+            |p| p.display().to_string(),
+        );
+        ui.weak(saved).on_hover_text(hover);
+        if self.transcript.echo_removed > 0 {
+            ui.weak(format!("{} echo lines removed ·", self.transcript.echo_removed));
+        }
+        let mut show = None;
+        if let Some(notice) = self.notice() {
+            if let Some(file) = &notice.file
+                && ui.small_button("Show").clicked()
+            {
+                show = Some(file.clone());
+            }
+            ui.label(RichText::new(&notice.text).color(theme::accent(ui)));
+        }
+        if let Some(file) = show {
+            platform::reveal_in_finder(&file);
+        }
+        if self.exporting() {
+            ui.spinner();
+            ui.weak("Choosing a folder…");
+        }
+    }
 }

@@ -1,8 +1,10 @@
 //! The native window (egui): app state, background work, and the frame loop.
 //! Pages live in their own modules.
 
+mod library;
 mod meeting_page;
 mod platform;
+mod reader;
 mod settings_page;
 mod sidebar;
 mod theme;
@@ -21,6 +23,8 @@ use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
+use library::{ExportPick, MeetingList, Notice, OpenMeeting};
+use reader::Reader;
 
 /// How long quitting waits for speech that was still being transcribed.
 const EXIT_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -128,8 +132,20 @@ pub struct App {
     /// Whisper seconds per audio second for the last final chunk.
     speed: Option<f32>,
     next_utterance: u64,
-    /// Where the transcript is saved; chosen when the first session starts.
-    save_path: Option<PathBuf>,
+    /// The meeting in the window; its lines are in `transcript`.
+    open: OpenMeeting,
+    /// The meeting file each session records into, by its first utterance
+    /// id, so lines that finish after another meeting was opened still
+    /// reach the right file.
+    session_files: Vec<(u64, PathBuf)>,
+    /// Such lines, waiting to be written.
+    late_lines: Vec<(PathBuf, crate::transcript::Line)>,
+    /// Meeting time at which the current session started.
+    session_offset: f32,
+    list: MeetingList,
+    reader: Reader,
+    export_pick: Option<ExportPick>,
+    notice: Option<Notice>,
     saved_settings: Settings,
     /// The model whose Delete button was pressed once, awaiting confirmation.
     confirm_delete: Option<ModelInfo>,
@@ -165,7 +181,14 @@ impl App {
             errors: Vec::new(),
             speed: None,
             next_utterance: 0,
-            save_path: None,
+            open: OpenMeeting::unsaved(),
+            session_files: Vec::new(),
+            late_lines: Vec::new(),
+            session_offset: 0.0,
+            list: MeetingList::default(),
+            reader: Reader::default(),
+            export_pick: None,
+            notice: None,
             saved_settings: settings,
             confirm_delete: None,
             folder_pick: None,
@@ -378,13 +401,20 @@ impl App {
     }
 
     fn start_session(&mut self) {
-        let Some(engine) = self.engine.as_ref().filter(|e| e.ready) else {
+        if self.open.read_only() || !self.engine.as_ref().is_some_and(|e| e.ready) {
             return;
-        };
-        if self.save_path.is_none() {
-            self.save_path = Some(crate::meetings::new_file_path(&self.meetings_dir_path()));
         }
-        let time_offset = self.transcript.lines().last().map_or(0.0, |l| l.end.ceil());
+        // The file must exist before recording, so lines that finish after
+        // the user moves on to another meeting have somewhere to go.
+        self.save_open_creating();
+        let Some(engine) = self.engine.as_ref() else { return };
+        // A reopened meeting continues its clock.
+        let time_offset = self
+            .transcript
+            .lines()
+            .last()
+            .map_or(0.0, |l| l.end.ceil())
+            .max(self.open.meeting.duration as f32);
         let cfg = SessionConfig {
             capture_me: self.capture_me,
             capture_others: self.capture_others,
@@ -393,11 +423,16 @@ impl App {
             first_utterance: self.next_utterance,
             language: self.language.map(str::to_string),
         };
+        let first_utterance = self.next_utterance;
         self.next_utterance += 10_000_000;
         let ctx = self.ctx.clone();
         match Session::start(cfg, engine.jobs.clone(), move || ctx.request_repaint()) {
             Ok(session) => {
                 self.errors.extend(session.warnings.iter().cloned());
+                if let Some(path) = &self.open.path {
+                    self.session_files.push((first_utterance, path.clone()));
+                }
+                self.session_offset = time_offset;
                 self.session = Some(session);
             }
             Err(e) => self.errors.push(format!("{e:#}")),
@@ -405,15 +440,23 @@ impl App {
     }
 
     fn stop_session(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        self.open.meeting.duration = self.open.meeting.duration.max(self.recorded_seconds());
         if let Some(session) = self.session.take() {
             session.stop();
         }
+        self.mark_edited();
+        self.save_open();
     }
 
     /// Collects results from background threads.
     fn poll(&mut self) {
         self.poll_background();
+        self.poll_export_pick();
         self.poll_engine();
+        self.flush_late_lines();
     }
 
     fn poll_background(&mut self) {
@@ -481,7 +524,7 @@ impl App {
         }
         changed |= self.poll_retired();
         if changed {
-            self.save();
+            self.mark_new_lines();
         }
     }
 
@@ -503,9 +546,19 @@ impl App {
         changed
     }
 
-    /// Applies a transcription result. Returns true if a line was added.
+    /// Applies a transcription result. Returns true if a line was added to
+    /// the open meeting.
     fn apply_output(&mut self, output: Output) -> bool {
         match output {
+            Output::Preview { utterance, .. }
+            | Output::Final {
+                utterance, line: None, ..
+            } if !self.for_open_meeting(utterance) => {}
+            Output::Final {
+                utterance,
+                line: Some(line),
+                ..
+            } if !self.for_open_meeting(utterance) => self.add_late_line(utterance, line),
             Output::Preview {
                 speaker,
                 utterance,
@@ -547,20 +600,10 @@ impl App {
             }
         }
         if changed {
-            self.save();
+            self.mark_new_lines();
         }
-    }
-
-    fn save(&mut self) {
-        let Some(path) = &self.save_path else { return };
-        let result = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|_| std::fs::write(path, self.transcript.to_text()));
-        if let Err(e) = result {
-            self.errors.push(format!("Could not save {}: {e}", path.display()));
-            self.save_path = None;
-        }
+        self.flush_late_lines();
+        self.save_open();
     }
 
     fn settings(&self) -> Settings {
@@ -612,11 +655,13 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
+        self.refresh_library();
+        self.autosave();
         self.save_settings_if_changed();
 
         egui::Panel::left("sidebar")
             .resizable(false)
-            .exact_size(196.0)
+            .exact_size(232.0)
             .show_separator_line(false)
             .frame(theme::sidebar_frame(ui))
             .show(ui, |ui| self.sidebar(ui));

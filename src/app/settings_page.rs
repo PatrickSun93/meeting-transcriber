@@ -125,7 +125,7 @@ impl App {
             ),
             Folder::Meetings => (
                 "Meetings folder",
-                "New transcripts are saved here. Existing files stay where they are.",
+                "Meetings are saved here as Markdown and listed in the sidebar. Existing files stay where they are.",
                 &self.meetings_dir,
             ),
         };
