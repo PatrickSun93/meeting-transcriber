@@ -3,13 +3,15 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSSound};
+use objc2_foundation::NSString;
 
 use super::super::{Sound, launch_agent_plist, spawn};
 
@@ -26,11 +28,30 @@ const AGENT_LABEL: &str = "com.patricksun.meeting-transcriber";
 const APP_PATH: &str = "/Applications/Meeting Transcriber.app";
 /// `kVK_ANSI_V`.
 const KEY_V: u16 = 9;
+/// `kCGEventSourceStateHIDSystemState`: the keyboard as it is now.
+const HID_SYSTEM_STATE: i32 = 1;
+/// Shift, Control and Option in `CGEventFlags`: held during ⌘V they make
+/// it another shortcut (⌘⌥V moves files in Finder).
+const STRAY_MODIFIERS: u64 = 0x2_0000 | 0x4_0000 | 0x8_0000;
+/// Longest ⌘V waits for them to come up.
+const MODIFIER_WAIT: Duration = Duration::from_millis(1500);
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightPostEventAccess() -> bool;
     fn CGRequestPostEventAccess() -> bool;
+    fn CGEventSourceFlagsState(state: i32) -> u64;
+}
+
+/// Waits (a little, and at most `MODIFIER_WAIT`) until Shift, Control and
+/// Option are all up: the hotkey's own, or one held for the next thing.
+fn wait_for_modifiers_up() {
+    std::thread::sleep(Duration::from_millis(50));
+    let deadline = Instant::now() + MODIFIER_WAIT;
+    // SAFETY: a plain query of the keyboard's state.
+    while unsafe { CGEventSourceFlagsState(HID_SYSTEM_STATE) } & STRAY_MODIFIERS != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Presses ⌘V for the app in front. Needs Accessibility permission.
@@ -45,7 +66,7 @@ pub fn paste() -> Result<()> {
     }
     // Lets the hotkey's modifier come all the way up first, so this is not
     // read as ⌘⌥V.
-    std::thread::sleep(Duration::from_millis(100));
+    wait_for_modifiers_up();
     let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
         .map_err(|()| anyhow!("could not make a keyboard event"))?;
     for down in [true, false] {
@@ -57,13 +78,27 @@ pub fn paste() -> Result<()> {
     Ok(())
 }
 
+/// Plays one of voice2cursor's sounds. In this process rather than with
+/// `afplay`: a meeting records the Mac's audio without this app's own, so
+/// the sounds stay out of its Others track.
 pub fn play_sound(sound: Sound) {
+    // One at a time: NSSound is not documented as safe across threads,
+    // and the recorder and the finisher both play.
+    static PLAYING: Mutex<()> = Mutex::new(());
     let name = match sound {
         Sound::Start => "Tink",
         Sound::Done => "Pop",
         Sound::Error => "Basso",
     };
-    spawn(Command::new("afplay").arg(format!("/System/Library/Sounds/{name}.aiff")));
+    let _one = PLAYING.lock().unwrap_or_else(|e| e.into_inner());
+    // A system sound, by name; the same object each time.
+    let Some(sound) = NSSound::soundNamed(&NSString::from_str(name)) else {
+        return;
+    };
+    // Played off the main thread, a sound never hears that it ended and
+    // refuses to play again until stopped.
+    sound.stop();
+    sound.play();
 }
 
 fn agent_path() -> Option<PathBuf> {

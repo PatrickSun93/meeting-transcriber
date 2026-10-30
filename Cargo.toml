@@ -28,7 +28,8 @@ cuda = ["whisper-rs/cuda"]
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = "11"
 whisper-rs = { version = "0.16", features = ["metal"] }
-# Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item (AppKit).
+# Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item and the
+# sounds (AppKit).
 # All already built for winit and eframe.
 core-foundation = "0.9"
 core-graphics = "0.23"
@@ -45,6 +46,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSMenuItem",
     "NSResponder",
     "NSRunningApplication",
+    "NSSound",
     "NSStatusBar",
     "NSStatusBarButton",
     "NSStatusItem",
