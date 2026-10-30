@@ -239,6 +239,8 @@ fn install_fallback_fonts(ctx: &egui::Context) {
             break;
         }
         let Ok(bytes) = std::fs::read(path) else { continue };
+        let data = egui::FontData::from_owned(bytes);
+        let data = data.clone().tweak(baseline_tweak(&data));
         let families = [egui::FontFamily::Proportional, egui::FontFamily::Monospace]
             .into_iter()
             .map(|family| egui::epaint::text::InsertFontFamily {
@@ -248,10 +250,45 @@ fn install_fallback_fonts(ctx: &egui::Context) {
             .collect();
         ctx.add_font(egui::epaint::text::FontInsert::new(
             &format!("fallback-{i}"),
-            egui::FontData::from_owned(bytes),
+            data,
             families,
         ));
         added = true;
+    }
+}
+
+/// egui centres a fallback font's line height on egui's own font. CJK fonts
+/// have much taller lines, so their characters sit a few pixels above the
+/// baseline and lose their tops at the top edge of a scroll area. Measures
+/// how far, and shifts that font's glyphs back down.
+fn baseline_tweak(data: &egui::FontData) -> egui::epaint::text::FontTweak {
+    const SIZE: f32 = 100.0;
+    let mut definitions = egui::FontDefinitions::default();
+    definitions
+        .font_data
+        .insert("fallback".into(), std::sync::Arc::new(data.clone()));
+    definitions
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push("fallback".into());
+    let mut fonts = egui::epaint::text::Fonts::new(Default::default(), definitions);
+    // A Latin letter, then Chinese, Japanese and Korean: whichever of those
+    // the font has shows how far its glyphs are lifted.
+    let galley =
+        fonts
+            .with_pixels_per_point(1.0)
+            .layout_no_wrap("x中あ한".into(), FontId::proportional(SIZE), Color32::WHITE);
+    let glyphs = &galley.rows[0].row.glyphs;
+    let latin = glyphs[0].pos.y;
+    let lift = glyphs[1..]
+        .iter()
+        .map(|g| latin - g.pos.y)
+        .find(|lift| *lift != 0.0)
+        .unwrap_or(0.0);
+    egui::epaint::text::FontTweak {
+        y_offset_factor: lift / SIZE,
+        ..Default::default()
     }
 }
 
@@ -339,6 +376,44 @@ fn parse_fc_list(output: &str) -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Chinese next to Latin keeps its tops inside the line, so a scroll
+    /// area's top edge does not cut them off. Needs a CJK system font.
+    #[test]
+    fn cjk_fallback_sits_on_the_baseline() {
+        let Some(bytes) = fallback_font_paths().iter().find_map(|p| std::fs::read(p).ok()) else {
+            return;
+        };
+        let data = egui::FontData::from_owned(bytes);
+        let mut definitions = egui::FontDefinitions::default();
+        let tweaked = data.clone().tweak(baseline_tweak(&data));
+        definitions.font_data.insert("cjk".into(), std::sync::Arc::new(tweaked));
+        definitions
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .push("cjk".into());
+        let mut fonts = egui::epaint::text::Fonts::new(Default::default(), definitions);
+        for pixels_per_point in [1.0, 2.0] {
+            for size in [11.5, 14.5, 15.0, 21.0] {
+                let galley = fonts.with_pixels_per_point(pixels_per_point).layout_no_wrap(
+                    "x中".into(),
+                    FontId::proportional(size),
+                    Color32::WHITE,
+                );
+                let [latin, cjk] = [0, 1].map(|i| galley.rows[0].row.glyphs[i]);
+                let top = cjk.pos.y + cjk.uv_rect.offset.y;
+                let bottom = top + cjk.uv_rect.size.y;
+                assert!(top >= -0.5, "top {top} at {size} pt, {pixels_per_point}x");
+                // Chinese characters dip a little below the Latin baseline.
+                assert!(
+                    (bottom - latin.pos.y).abs() <= 0.25 * size,
+                    "bottom {bottom} vs baseline {} at {size} pt",
+                    latin.pos.y
+                );
+            }
+        }
+    }
 
     #[test]
     fn fc_list_output_is_parsed() {
