@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -55,11 +55,25 @@ fn installed(program: &str) -> bool {
 }
 
 /// Under "Paste automatically" on Wayland: what presses Ctrl+V, or that
-/// nothing can.
+/// nothing can. Asked every frame the settings show, so the PATH is looked
+/// through again only every few seconds (a tool installed meanwhile shows).
 pub fn paste_note() -> Option<String> {
+    static NOTE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
     if !wayland() {
         return None;
     }
+    let mut note = NOTE.lock().unwrap_or_else(|e| e.into_inner());
+    match &*note {
+        Some((at, text)) if at.elapsed() < Duration::from_secs(5) => text.clone(),
+        _ => {
+            let text = wayland_paste_note();
+            *note = Some((Instant::now(), text.clone()));
+            text
+        }
+    }
+}
+
+fn wayland_paste_note() -> Option<String> {
     Some(
         match paste_tools(true, gnome(), installed).first() {
             Some(PasteTool::Ydotool) => "On Wayland, ydotool presses Ctrl+V; its service (ydotoold) must be running.",
@@ -88,7 +102,10 @@ pub fn paste() -> Result<()> {
             PasteTool::XTest => xtest_paste(),
             PasteTool::Wtype => run_after_modifiers("wtype", &["-M", "ctrl", "v", "-m", "ctrl"]),
             // Linux input codes: 29 left Ctrl, 47 V; `:1` down, `:0` up.
-            PasteTool::Ydotool => run_after_modifiers("ydotool", &["key", "29:1", "47:1", "47:0", "29:0"]),
+            // ydotool before 1.0 (Debian 12, Ubuntu 22.04) takes key names
+            // instead, and refuses the codes without typing anything.
+            PasteTool::Ydotool => run_after_modifiers("ydotool", &["key", "29:1", "47:1", "47:0", "29:0"])
+                .or_else(|e| run_tool("ydotool", &["key", "ctrl+v"]).map_err(|_| e)),
         };
         match result {
             Ok(()) => return Ok(()),
@@ -102,6 +119,10 @@ pub fn paste() -> Result<()> {
 /// Wayland nobody may ask whether it has).
 fn run_after_modifiers(program: &str, args: &[&str]) -> Result<()> {
     std::thread::sleep(Duration::from_millis(150));
+    run_tool(program, args)
+}
+
+fn run_tool(program: &str, args: &[&str]) -> Result<()> {
     let out = Command::new(program)
         .args(args)
         .output()
