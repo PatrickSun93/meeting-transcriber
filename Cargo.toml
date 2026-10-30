@@ -1,0 +1,25 @@
+[package]
+name = "meeting-transcriber"
+version = "0.1.0"
+edition = "2024"
+description = "Live meeting transcription on macOS: your mic is 'Me', the Mac's audio is 'Others'. Local Whisper."
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+cpal = "0.18"
+crossbeam-channel = "0.5"
+dirs = "7"
+eframe = "0.37"
+hound = "3"
+ureq = "3"
+whisper-rs = "0.16"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+screencapturekit = "11"
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+[profile.release]
+lto = "thin"
