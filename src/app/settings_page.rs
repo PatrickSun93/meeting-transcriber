@@ -1,6 +1,9 @@
 //! The settings page: models, storage folders, recognition options,
 //! dictation (in `dictation_page.rs`), about.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
 use eframe::egui::{self, Align, Layout, RichText, Ui};
 
 use super::{App, Folder, LANGUAGES, format_size, language_name, platform, theme};
@@ -29,6 +32,108 @@ impl App {
                     ui.add_space(12.0);
                 }
             });
+    }
+
+    /// With an NVIDIA card and no CUDA support yet: offers to download it,
+    /// shows the download, then offers to restart into it.
+    fn cuda_addon_row(&mut self, ui: &mut Ui) {
+        use crate::cuda_addon::{self, State};
+
+        if cfg!(target_os = "macos") || !self.use_gpu || crate::transcriber::GPU == Some("CUDA") {
+            return;
+        }
+        if let Some(d) = &self.cuda_addon.download
+            && let Ok(result) = d.done.try_recv()
+        {
+            self.cuda_addon.download = None;
+            match result {
+                Ok(_) => {
+                    self.cuda_addon.installed = true;
+                    self.cuda_addon.state = None;
+                }
+                Err(e) => self.errors.push(format!("Could not get CUDA support: {e:#}")),
+            }
+        }
+        if let Some(d) = &self.cuda_addon.download {
+            let (done, total) = *d.progress.lock().unwrap_or_else(|e| e.into_inner());
+            ui.horizontal(|ui| {
+                let fraction = total.map_or(0.0, |t| done as f32 / t.max(1) as f32);
+                let text = match total {
+                    Some(t) => format!("Downloading CUDA support…  {} of {}", format_size(done), format_size(t)),
+                    None => format!("Downloading CUDA support…  {}", format_size(done)),
+                };
+                ui.add(egui::ProgressBar::new(fraction).text(text).desired_width(320.0));
+                if ui.button("Cancel").clicked() {
+                    d.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+            return;
+        }
+        if self.cuda_addon.installed {
+            let recording = self.recording();
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    theme::READY_GREEN,
+                    "CUDA support is installed. It is used once the app opens again.",
+                );
+                if ui
+                    .add_enabled(!recording, egui::Button::new("Restart now"))
+                    .on_disabled_hover_text("Stop recording first.")
+                    .clicked()
+                {
+                    self.restart();
+                }
+            });
+            return;
+        }
+        let state = self.cuda_addon.state.get_or_insert_with(cuda_addon::state).clone();
+        if !state.offer() {
+            return;
+        }
+        let text = match state {
+            State::Outdated(_) => format!(
+                "The CUDA support here is for another version of the app. Download the one for this version \
+                 (about {} MB) to use the NVIDIA card again.",
+                cuda_addon::SIZE_MB
+            ),
+            _ => format!(
+                "An NVIDIA graphics card is here. CUDA support (about {} MB to download) makes Whisper faster on it \
+                 than {}.",
+                cuda_addon::SIZE_MB,
+                if crate::transcriber::GPU.is_some() {
+                    "Vulkan"
+                } else {
+                    "the processor"
+                }
+            ),
+        };
+        ui.horizontal_wrapped(|ui| {
+            ui.label(text);
+            if ui.button("Download CUDA support").clicked() {
+                self.start_cuda_download();
+            }
+        });
+    }
+
+    fn start_cuda_download(&mut self) {
+        let progress = Arc::new(Mutex::new((0, None)));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+        let ctx = self.ctx.clone();
+        let (p, c) = (progress.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let result = crate::cuda_addon::install(None, c, |done, total| {
+                *p.lock().unwrap_or_else(|e| e.into_inner()) = (done, total);
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            });
+            let _ = done_tx.send(result);
+            ctx.request_repaint();
+        });
+        self.cuda_addon.download = Some(super::CudaDownload {
+            progress,
+            cancel,
+            done: done_rx,
+        });
     }
 
     fn model_card(&mut self, ui: &mut Ui) {
@@ -63,6 +168,7 @@ impl App {
                 }
             });
         }
+        self.cuda_addon_row(ui);
         if self.recording() {
             ui.colored_label(ui.visuals().warn_fg_color, "Stop recording to switch models.");
         }

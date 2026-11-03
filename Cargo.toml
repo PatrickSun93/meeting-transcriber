@@ -1,6 +1,6 @@
 [package]
 name = "meeting-transcriber"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Live meeting transcription on macOS, Windows and Linux: your mic is 'Me', the computer's audio is 'Others'. Local Whisper."
 license = "MIT"
@@ -17,6 +17,8 @@ dirs = "7"
 eframe = "0.37"
 hound = "3"
 ureq = "3"
+# Unpacks the CUDA add-on (src/cuda_addon.rs).
+zip = { version = "9", default-features = false, features = ["deflate"] }
 whisper-rs = "0.16"
 
 [features]

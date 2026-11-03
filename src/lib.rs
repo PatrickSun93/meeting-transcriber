@@ -6,6 +6,7 @@ pub mod app;
 pub mod audio;
 pub mod chunker;
 pub mod cli;
+pub mod cuda_addon;
 pub mod dictation;
 pub mod gpu;
 pub mod logfile;

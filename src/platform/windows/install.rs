@@ -98,10 +98,13 @@ pub fn install(desktop: bool) -> Result<PathBuf> {
                 to.display()
             )
         })?;
+        // The builds this copy has replace the installed ones; others stay
+        // (a CUDA add-on the app downloaded: it offers an update if it no
+        // longer fits).
         for gpu in crate::gpu::Backend::ALL {
             let folder = gpu.folder();
-            let _ = std::fs::remove_dir_all(to.join(folder));
             if from.join(folder).is_dir() {
+                let _ = std::fs::remove_dir_all(to.join(folder));
                 copy_dir(&from.join(folder), &to.join(folder))
                     .with_context(|| format!("could not copy the {folder} folder"))?;
             }

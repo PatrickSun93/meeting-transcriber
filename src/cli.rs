@@ -332,6 +332,63 @@ pub fn run_keys(once: bool, save: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `gpu`: where Whisper runs and the CUDA add-on's state. `gpu install-cuda
+/// [--from URL_OR_ZIP]`: downloads (or unpacks) the CUDA add-on.
+pub fn run_gpu(args: &[String], json: bool) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use crate::cuda_addon;
+
+    match args {
+        [] => {
+            let mut r = Report::default();
+            for (key, value) in crate::gpu::report() {
+                r.fact(key, value);
+            }
+            if let Some(source) = cuda_addon::source() {
+                r.fact("cuda_addon_source", source);
+            }
+            if cuda_addon::state().offer() {
+                r.problems.push(
+                    "An NVIDIA card is here without CUDA support: `meeting-transcriber gpu install-cuda` downloads it."
+                        .into(),
+                );
+            }
+            if json {
+                println!("{}", r.to_json());
+            } else {
+                print!("{}", r.to_text());
+            }
+            Ok(())
+        }
+        [cmd, rest @ ..] if cmd == "install-cuda" => {
+            let from = match rest {
+                [] => None,
+                [flag, value] if flag == "--from" => Some(value.as_str()),
+                _ => bail!("install-cuda takes only --from URL_OR_ZIP"),
+            };
+            let mut shown = 0;
+            let folder = cuda_addon::install(from, Arc::new(AtomicBool::new(false)), |done, total| {
+                let mb = done / 1_000_000;
+                if mb >= shown + 25 {
+                    shown = mb;
+                    match total {
+                        Some(t) => eprintln!("{mb} of {} MB", t / 1_000_000),
+                        None => eprintln!("{mb} MB"),
+                    }
+                }
+            })?;
+            println!(
+                "CUDA support is in {}. It is used once the app is opened again.",
+                folder.display()
+            );
+            Ok(())
+        }
+        _ => bail!("gpu takes nothing, or install-cuda [--from URL_OR_ZIP]"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

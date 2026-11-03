@@ -88,7 +88,17 @@ impl DictationState {
         let dictation = Dictation::start(config.clone(), wake);
         // Both would paste every dictation. voice2cursor is looked for by
         // the watcher, which pauses dictation when it finds it.
-        let claim = dictation::claim(&crate::models::app_support_dir().join("dictation.lock"));
+        let lock = crate::models::app_support_dir().join("dictation.lock");
+        let mut claim = dictation::claim(&lock);
+        // Restarted by the copy before (to use CUDA): it is quitting, and
+        // lets go of the lock in a moment.
+        if std::env::var_os(super::RESTARTED_ENV).is_some() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while matches!(claim, Claim::Taken) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                claim = dictation::claim(&lock);
+            }
+        }
         let other_copy = matches!(claim, Claim::Taken);
         dictation.set_paused(other_copy);
         Self {

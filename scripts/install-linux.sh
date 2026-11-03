@@ -28,15 +28,19 @@ apps_dir="$data_dir/applications"
 icons_dir="$data_dir/icons/hicolor/scalable/apps"
 mkdir -p "$bin_dir" "$apps_dir" "$icons_dir"
 lib_dir="$HOME/.local/lib/meeting-transcriber"
-if [[ -d "$assets/vulkan" || -d "$assets/cuda" ]]; then
+if [[ -d "$assets/vulkan" || -d "$assets/cuda" || -d "$lib_dir" ]]; then
     # The graphics-card builds must sit beside the program, which finds
     # them from where it really is: it lives in ~/.local/lib with them, and
     # ~/.local/bin links to it.
-    rm -rf "$lib_dir"
+    # The builds in the package replace the old ones; others stay (the CUDA
+    # add-on the app downloaded: it offers an update if it no longer fits).
     mkdir -p "$lib_dir"
     install -m 755 "$program" "$lib_dir/meeting-transcriber"
     for gpu in vulkan cuda; do
-        if [[ -d "$assets/$gpu" ]]; then cp -R "$assets/$gpu" "$lib_dir/"; fi
+        if [[ -d "$assets/$gpu" ]]; then
+            rm -rf "${lib_dir:?}/$gpu"
+            cp -R "$assets/$gpu" "$lib_dir/"
+        fi
     done
     rm -f "$bin_dir/meeting-transcriber"
     ln -s "$lib_dir/meeting-transcriber" "$bin_dir/meeting-transcriber"
