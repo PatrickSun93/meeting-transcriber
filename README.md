@@ -315,7 +315,7 @@ MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav ca
 
 `MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is the `models` folder in the app data folder (see [Windows and Linux](#windows-and-linux) for where that is).
 
-CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and packages it on Windows and Linux, and attaches the Windows `.zip` and the Linux `.tar.gz`. On pull requests those packages are the processor builds only; the graphics-card builds (Vulkan, and the CUDA add-ons, which take the better part of an hour) are built on `main`, for version tags, and when the workflow is run by hand (**Actions → CI → Run workflow**). sccache keeps compiled code between runs.
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and packages it on Windows and Linux, and attaches the Windows `.zip` and the Linux `.tar.gz`. On pull requests those packages are the processor builds only; the graphics-card builds (Vulkan, and the CUDA add-ons, which take the better part of an hour) are built on `main`, for version tags, and when the workflow is run by hand (**Actions → CI → Run workflow**), and for pull requests with the `gpu` label. sccache keeps compiled code between runs.
 
 | File | Role |
 | --- | --- |

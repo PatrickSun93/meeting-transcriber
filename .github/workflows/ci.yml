@@ -2,12 +2,15 @@ name: CI
 
 # Pull requests get the quick checks and the processor packages. The
 # graphics-card builds (Vulkan in the packages, the CUDA add-ons) take long,
-# so they are built on main, for version tags, and when run by hand.
+# so they are built on main, for version tags, when run by hand, and for
+# pull requests labelled gpu.
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
+    # labeled: adding the gpu label starts a run with the GPU builds.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       gpu:
@@ -23,7 +26,7 @@ concurrency:
 
 env:
   # Whether this run builds the graphics-card builds (see above).
-  GPU: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) }}
+  GPU: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu') }}
   # sccache keeps compiled Rust, C++ (whisper.cpp) and CUDA in the Actions
   # cache, so code that did not change is not compiled again.
   SCCACHE_GHA_ENABLED: 'true'
@@ -90,7 +93,7 @@ jobs:
   linux-cuda:
     # The CUDA add-on: a CUDA build and CUDA's runtime libraries in cuda/,
     # which the app downloads when it finds an NVIDIA card (src/cuda_addon.rs).
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -156,7 +159,7 @@ jobs:
     # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
     # cuda\. Visual Studio 2022, which CUDA 12 supports (windows-latest has
     # a newer one), with Ninja from its developer shell.
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu)
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: windows-2022
     env:
       CMAKE_GENERATOR: Ninja
