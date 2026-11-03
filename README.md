@@ -67,6 +67,19 @@ Dictation needs two more, both in **System Settings → Privacy & Security**:
 
 The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `./scripts/bundle-macos.sh --install`, switch Input Monitoring and Accessibility (like the other two) off and on again for **Meeting Transcriber**, then quit and reopen it.
 
+## Command line and AI agents
+
+Besides opening the window, the program answers on the command line, for
+scripts, bug reports and AI agents such as Claude Code (see [AGENTS.md](AGENTS.md)):
+
+| Command | What it does |
+|---|---|
+| `meeting-transcriber doctor [--json]` | What the app sees here: settings file, folders, models, hotkey, permissions, and what looks wrong |
+| `meeting-transcriber log [--lines N]` | The end of the app's log (`meeting-transcriber.log` in the app data folder); on Windows, the only place errors go |
+| `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it; `--save` makes it the dictation hotkey |
+| `meeting-transcriber settings [path \| get KEY \| set KEY VALUE] [--json]` | Lists, reads or changes settings, checked before saving |
+| `meeting-transcriber transcribe …` | Transcribes WAV files (see `meeting-transcriber help`) |
+
 ## Windows and Linux
 
 > [!WARNING]
@@ -77,7 +90,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
-| Whisper runs on | the GPU (Metal) | the processor, or the GPU with `--features vulkan` / `cuda` | the same as Windows |
+| Whisper runs on | the GPU (Metal) | the graphics card when there is one (CUDA on NVIDIA, Vulkan on others), else the processor | the same as Windows |
 | Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%LOCALAPPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
 | Folder dialog, file manager | Finder | Explorer | zenity or kdialog (else you type the path); the file manager over D-Bus, else `xdg-open` |
 | Dictation hotkey (default) | Right Option, any app (Input Monitoring) | Right Ctrl, any app | Right Ctrl on X11; on Wayland the desktop's shortcut, or `meeting-transcriber dictate toggle` bound to one ([details](#linux-1)) |
@@ -90,7 +103,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
-**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`; keep the `vulkan` folder beside it. With an NVIDIA card, get `Meeting-Transcriber-Windows-x86_64-NVIDIA.zip` instead (larger: it holds CUDA's DLLs in `cuda`), which is the fastest. The program starts the graphics-card build that runs on this PC, and runs Whisper on the processor when none does (**Settings → Model** says which, and can turn it off; `meeting-transcriber doctor` too). The first time, it offers to **Install** itself: it copies itself to `%LOCALAPPDATA%\Programs\Meeting Transcriber` (no administrator rights needed) and adds Meeting Transcriber to the Start menu and the desktop, so it is easy to find again; `meeting-transcriber install` does the same, `uninstall` takes the shortcuts away. Don't run it from inside the zip: Windows runs it from a temporary folder it later empties. Closing the window keeps it running in the notification area (perhaps under **^**). It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
 
 To build it yourself instead:
 
@@ -117,7 +130,7 @@ To build it yourself instead:
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
-For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA).
+For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA). `.\scripts\package-windows.ps1 -Vulkan` (and `-Cuda`) packages the processor build with those in `vulkan\` and `cuda\`, which it then picks from at startup.
 
 The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`. A release build is a windowed program, so the terminal shows its prompt again before the transcript is done; in Command Prompt, `start /wait meeting-transcriber.exe transcribe --me mic.wav` waits for it.
 
@@ -152,7 +165,7 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
 
 3. Open **Meeting Transcriber** from the app menu. It runs on X11 and Wayland.
 
-To hand it to someone else, `./scripts/package-linux.sh` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program, its launcher and icon, and `install.sh`. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
+To hand it to someone else, `./scripts/package-linux.sh --vulkan` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program with a Vulkan build in `vulkan/`, its launcher and icon, and `install.sh`; add `--cuda` for the `-NVIDIA` archive with a CUDA build and CUDA's libraries in `cuda/`. The program starts the graphics-card build that runs here, else Whisper runs on the processor. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
 
 ## Using it
 
@@ -204,7 +217,7 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 Hold a key, speak, and let go: the text is typed where the cursor is, in any app.
 
-1. Hold **Right Option** on the Mac, **Right Ctrl** on Windows and Linux (the hotkey can be changed), in any app. You hear a short sound (*Tink* on the Mac).
+1. Hold **Right Option** on the Mac, **Right Ctrl** on Windows and Linux (the hotkey can be changed to any key or combination, such as Ctrl+Shift+D), in any app. You hear a short sound (*Tink* on the Mac).
 2. Speak, then let go. The text is copied and pasted where the cursor is (*Pop*; *Basso* if something failed). Presses shorter than 0.35 s are ignored, and recording stops on its own after 5 minutes.
 3. While a meeting is recording, what you say during dictation stays out of the meeting: *Me* is silent while the key is held.
 
@@ -218,7 +231,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 
 ### Windows
 
-- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Press a key…** takes any other key.
+- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Record keys…** takes any other key or combination (hold it, then let go); a combination's keys are kept from the app in front while it is held.
 - **Pasting** presses Ctrl+V. Windows does not let an app type into one running as administrator, so in such a window the text is only copied: press Ctrl+V yourself.
 - **Sounds** are the system's *Device Connect* (start), *Notification* (done) and *Critical Stop* (error), as set in **Settings → System → Sound → More sound settings**. Like everything the PC plays, they are part of a meeting's *Others* track while you record one.
 - **Tray**: the icon in the notification area is a coloured microphone (green ready, red recording, amber transcribing, grey paused or loading, crimson `!` after an error). Left-click opens the window; right-click shows the last 10 dictations (click to copy), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app there; Windows may tuck the icon under the **^** arrow, and **Settings → Personalization → Taskbar → Other system tray icons** keeps it in view.
@@ -228,7 +241,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 
 How dictation hears the hotkey depends on the session:
 
-- **X11**: Right Ctrl by default, seen in every app through XInput 2, like on the other systems; **Press a key…** takes any other key. Pasting presses Ctrl+V through XTest. Nothing needs to be installed or allowed.
+- **X11**: Right Ctrl by default, seen in every app through XInput 2, like on the other systems; **Record keys…** takes any other key or combination (hold it, then let go); a combination's keys are kept from the app in front while it is held. Pasting presses Ctrl+V through XTest. Nothing needs to be installed or allowed.
 - **Wayland**: apps may not watch the keyboard, so the app asks the desktop for a global shortcut through the [GlobalShortcuts portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html) (KDE Plasma 5.27+, GNOME 48+, Hyprland). The desktop asks you once which keys to use; holding them records and letting go transcribes. The Dictation settings show the keys, and the desktop's shortcut settings change them. Pasting on Wayland needs [`wtype`](https://github.com/atx/wtype) (KDE, Sway, Hyprland) or [`ydotool`](https://github.com/ReimuNotMoe/ydotool) with its `ydotoold` service running (GNOME, which wtype can't type into; the older 0.1 versions in Debian 12 and Ubuntu 22.04 work too); without either, the text is only copied, which the app says once.
 - **Any session, any key**: the running app also takes commands, so any shortcut can dictate:
 
@@ -264,7 +277,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
-| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Press a key…** for any other; on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
+| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
 
 ## Transcribe recordings
 

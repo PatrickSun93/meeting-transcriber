@@ -24,7 +24,7 @@ use crate::models::{self, DEFAULT_MODEL, ModelInfo};
 use crate::platform;
 use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
-use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
+use crate::transcriber::{Job, Output, Progress, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
 use dictation::DictationState;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
@@ -93,6 +93,8 @@ struct Engine {
     jobs: Sender<Job>,
     outputs: Receiver<Output>,
     ready: bool,
+    /// What the worker last said it has to do.
+    progress: Progress,
 }
 
 struct Download {
@@ -136,6 +138,8 @@ pub struct App {
     meetings_dir: String,
     /// The old models folder of an unfinished move, as stored ("" if none).
     models_move_from: String,
+    /// Takes effect when the app is next opened (Windows; see `gpu`).
+    use_gpu: bool,
     engine: Option<Engine>,
     /// Outputs of replaced engines. Their workers finish the jobs already
     /// queued (the last speech of a meeting) and then hang up.
@@ -171,6 +175,13 @@ pub struct App {
     model_move: Option<ModelMove>,
     sidebar_tab: SidebarTab,
     dict: DictationState,
+    /// Offering to install (Windows, when run from wherever it was unzipped).
+    install_offer: bool,
+}
+
+/// Marks that the user does not want to be asked to install.
+fn install_declined_path() -> std::path::PathBuf {
+    models::app_support_dir().join("install-declined")
 }
 
 impl App {
@@ -210,6 +221,7 @@ impl App {
             models_dir: settings.models_dir.clone(),
             meetings_dir: settings.meetings_dir.clone(),
             models_move_from: settings.models_move_from.clone(),
+            use_gpu: settings.use_gpu,
             engine: None,
             retired: Vec::new(),
             download: None,
@@ -234,6 +246,7 @@ impl App {
             model_move: None,
             sidebar_tab: SidebarTab::Meetings,
             dict,
+            install_offer: !platform::installed() && !install_declined_path().is_file(),
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -253,6 +266,15 @@ impl App {
     }
 
     /// Loads the selected model in the background if it is downloaded.
+    /// Meeting audio waiting for Whisper: pieces (counting those not yet
+    /// picked up) and seconds of audio. None when it has nothing to do.
+    fn transcribing(&self) -> Option<(usize, f32)> {
+        let engine = self.engine.as_ref()?;
+        let p = engine.progress;
+        let queued = engine.jobs.len();
+        (p.busy || queued > 0).then_some((p.waiting + queued, p.waiting_seconds))
+    }
+
     fn ensure_engine(&mut self) {
         if self.engine.as_ref().is_some_and(|e| e.model == self.model) || !self.model.is_downloaded() {
             return;
@@ -274,6 +296,7 @@ impl App {
             jobs: job_tx,
             outputs: out_rx,
             ready: false,
+            progress: Progress::default(),
         });
     }
 
@@ -595,6 +618,11 @@ impl App {
                         engine.ready = true;
                     }
                 }
+                Output::Progress(progress) => {
+                    if let Some(engine) = &mut self.engine {
+                        engine.progress = progress;
+                    }
+                }
                 Output::LoadFailed(e) => {
                     let label = self.engine.as_ref().map_or("the model", |e| e.model.label);
                     let message = format!("Could not load {label}: {e}");
@@ -666,7 +694,7 @@ impl App {
             }
             Output::Error(e) => self.errors.push(e),
             // Only meaningful for the current engine; see poll_engine.
-            Output::Ready | Output::LoadFailed(_) => {}
+            Output::Ready | Output::LoadFailed(_) | Output::Progress(_) => {}
             // Goes to the dictation thread, never here.
             Output::Dictation(_) => {}
         }
@@ -701,6 +729,7 @@ impl App {
             capture_me: self.capture_me,
             capture_others: self.capture_others,
             remove_echo: self.transcript.echo.enabled,
+            use_gpu: self.use_gpu,
             models_dir: self.models_dir.clone(),
             meetings_dir: self.meetings_dir.clone(),
             models_move_from: self.models_move_from.clone(),
@@ -713,6 +742,59 @@ impl App {
         if settings != self.saved_settings {
             settings.save();
             self.saved_settings = settings;
+        }
+    }
+
+    /// Offers to install a copy run from where it was unzipped, so it can
+    /// be found again in the Start menu.
+    fn install_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.install_offer {
+            return;
+        }
+        let from_temp = platform::running_from_temp();
+        let text = if from_temp {
+            "Meeting Transcriber is running from inside the zip, from a temporary folder Windows empties. \
+             Install it to keep it, with a shortcut in the Start menu and on the desktop."
+                .to_string()
+        } else {
+            format!(
+                "Meeting Transcriber is not installed. Install it to {} with a shortcut in the Start menu and on \
+                 the desktop, so it is easy to find again.",
+                platform::install_dir().display()
+            )
+        };
+        let mut install = false;
+        let mut later = false;
+        let mut never = false;
+        let recording = self.recording();
+        dictation_page::banner(ui, theme::accent(ui), &text, |ui| {
+            install = ui
+                .add_enabled(!recording, egui::Button::new("Install"))
+                .on_disabled_hover_text("Stop recording first: the installed copy opens in its place.")
+                .clicked();
+            later = ui.small_button("Not now").clicked();
+            never = !from_temp && ui.small_button("Don't ask again").clicked();
+        });
+        if later {
+            self.install_offer = false;
+        }
+        if never {
+            self.install_offer = false;
+            let _ = std::fs::write(install_declined_path(), b"");
+        }
+        if install {
+            self.install_offer = false;
+            match platform::install(true).and_then(|exe| {
+                // The installed copy takes over: this one quits first, so
+                // the two don't both dictate.
+                self.stop_session();
+                self.finish_pending();
+                self.save_settings_if_changed();
+                platform::open_installed(&exe)
+            }) {
+                Ok(()) => std::process::exit(0),
+                Err(e) => self.errors.push(format!("Could not install: {e:#}")),
+            }
         }
     }
 
@@ -747,6 +829,12 @@ impl eframe::App for App {
     /// keep being saved and the menu bar item stays current.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if let Some(session) = self.session.as_mut() {
+            let silent = session.silence_warnings();
+            self.errors.extend(silent);
+            // Checked even if no audio comes in to wake the window.
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         self.refresh_library();
         self.autosave();
         self.dictation_logic(ctx);
@@ -767,6 +855,7 @@ impl eframe::App for App {
             .frame(theme::content_frame(ui))
             .show(ui, |ui| {
                 self.error_banner(ui);
+                self.install_banner(ui);
                 self.dictation_banners(ui);
                 match self.page {
                     Page::Meeting => self.meeting_page(ui),

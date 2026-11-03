@@ -9,16 +9,24 @@ use std::process::Command;
 use super::{Picked, backslashed, spawn};
 
 mod hotkey;
+mod install;
 mod system;
 mod tray;
 
 pub(super) use hotkey::start_hotkey;
 pub use hotkey::{HOTKEY_HINT, hotkey_held};
+pub use install::{install, install_dir, installed, open_installed, running_from_temp, uninstall};
 pub use system::{
     AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, play_sound,
     set_open_at_login, show_app,
 };
 pub use tray::Tray;
+
+/// What the system allows the app, for `meeting-transcriber doctor`: the
+/// keyboard hook needs no permission on Windows.
+pub fn diagnostics() -> Vec<(&'static str, String)> {
+    vec![("keyboard_hook", "needs no permission".into())]
+}
 
 pub const SHOW_IN_FILES: &str = "Show in Explorer";
 pub const THIS_COMPUTER: &str = "this PC";

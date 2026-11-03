@@ -5,7 +5,10 @@
 pub mod app;
 pub mod audio;
 pub mod chunker;
+pub mod cli;
 pub mod dictation;
+pub mod gpu;
+pub mod logfile;
 pub mod meeting;
 pub mod meetings;
 pub mod models;

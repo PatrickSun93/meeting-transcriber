@@ -10,7 +10,7 @@ use meeting_transcriber::models::{self, DEFAULT_MODEL, ModelInfo};
 use meeting_transcriber::settings::Settings;
 use meeting_transcriber::transcriber::WhisperEngine;
 use meeting_transcriber::transcript::format_time;
-use meeting_transcriber::{app, wav};
+use meeting_transcriber::{app, cli, wav};
 
 const USAGE: &str = "\
 Meeting Transcriber
@@ -23,6 +23,30 @@ Meeting Transcriber
       Starts or stops dictation in the running app, as holding and
       letting go of the hotkey does. Bind `dictate toggle` to a shortcut
       in your desktop's keyboard settings (on Wayland, or for any key).
+
+  meeting-transcriber install [--no-desktop]          (Windows)
+      Copies the program (and its graphics-card builds) to
+      %LOCALAPPDATA%\\Programs\\Meeting Transcriber and adds shortcuts in
+      the Start menu and on the desktop. uninstall takes them away.
+
+  meeting-transcriber doctor [--json]
+      Reports what the app sees here: version, settings file, folders,
+      models, the hotkey, whether the app is running, permissions, and
+      anything that looks wrong. For bug reports and AI agents.
+
+  meeting-transcriber log [--lines N]
+      Prints the end of the app's log (errors from recording, Whisper
+      and dictation), kept in the app data folder.
+
+  meeting-transcriber keys [--once] [--save] [--json]
+      Prints every key or combination you hold and let go of, as the
+      dictation hotkey watcher sees it, and its setting name. --once
+      stops after one; --save makes it the dictation hotkey.
+
+  meeting-transcriber settings [--json]
+  meeting-transcriber settings path | get KEY | set KEY VALUE
+      Lists, reads or changes settings (checked before saving), e.g.
+      `settings set dictation_hotkey ctrl+shift+vk:68`.
 
   meeting-transcriber transcribe [--me FILE.wav] [--others FILE.wav]
                                  [--model PATH_OR_ID] [--language CODE]
@@ -41,11 +65,65 @@ fn main() -> Result<()> {
     if !args.is_empty() {
         meeting_transcriber::platform::attach_console();
     }
+    // The processor build hands over to a graphics-card build beside it
+    // when there is a card for it (Windows; see `gpu`).
+    if let Some(code) = meeting_transcriber::gpu::hand_off(&args) {
+        std::process::exit(code);
+    }
     match args.first().map(String::as_str) {
         None => run_app(false),
         Some("--hidden") => run_app(true),
         Some("transcribe") => run_transcribe(&args[1..]),
         Some("dictate") => run_dictate(&args[1..]),
+        Some("install") => {
+            let (set, _) = flags(&args[1..], &["--no-desktop"])?;
+            let exe = meeting_transcriber::platform::install(!set.contains(&"--no-desktop"))?;
+            println!("Installed {}", exe.display());
+            Ok(())
+        }
+        Some("uninstall") => {
+            let dir = meeting_transcriber::platform::uninstall()?;
+            println!(
+                "Removed the shortcuts and the login entry. Delete {} to remove the program; \
+                 your meetings and settings stay.",
+                dir.display()
+            );
+            Ok(())
+        }
+        Some("doctor") => {
+            let (_, json) = flags(&args[1..], &[])?;
+            let report = cli::doctor();
+            if json {
+                println!("{}", report.to_json());
+            } else {
+                print!("{}", report.to_text());
+            }
+            Ok(())
+        }
+        Some("log") => {
+            let lines = match &args[1..] {
+                [] => 200,
+                [flag, n] if flag == "--lines" => n.parse().context("--lines takes a number")?,
+                _ => bail!("log takes only --lines N\n\n{USAGE}"),
+            };
+            match meeting_transcriber::logfile::tail(lines) {
+                Some(text) => println!("{text}"),
+                None => eprintln!(
+                    "No log yet at {}: the app writes one when opened.",
+                    meeting_transcriber::logfile::log_path().display()
+                ),
+            }
+            Ok(())
+        }
+        Some("keys") => {
+            let (set, json) = flags(&args[1..], &["--once", "--save"])?;
+            cli::run_keys(set.contains(&"--once"), set.contains(&"--save"), json)
+        }
+        Some("settings") => {
+            let json = args.iter().any(|a| a == "--json");
+            let rest: Vec<String> = args[1..].iter().filter(|a| *a != "--json").cloned().collect();
+            cli::run_settings(&rest, json)
+        }
         Some("-h" | "--help" | "help") => {
             print!("{USAGE}");
             Ok(())
@@ -54,7 +132,24 @@ fn main() -> Result<()> {
     }
 }
 
+/// Reads a command's flags: which of `allowed` were given, and `--json`.
+fn flags<'a>(args: &[String], allowed: &[&'a str]) -> Result<(Vec<&'a str>, bool)> {
+    let mut given = Vec::new();
+    let mut json = false;
+    for arg in args {
+        if arg == "--json" {
+            json = true;
+        } else if let Some(flag) = allowed.iter().find(|f| **f == arg) {
+            given.push(*flag);
+        } else {
+            bail!("unknown option {arg:?}\n\n{USAGE}");
+        }
+    }
+    Ok((given, json))
+}
+
 fn run_app(hidden: bool) -> Result<()> {
+    meeting_transcriber::logfile::start();
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Meeting Transcriber")

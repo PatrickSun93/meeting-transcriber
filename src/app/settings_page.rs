@@ -37,11 +37,31 @@ impl App {
             "Whisper runs on {}. Larger models are more accurate but slower.",
             platform::THIS_COMPUTER
         ));
-        if crate::transcriber::GPU.is_none() {
-            ui.weak(
-                "This build runs Whisper on the processor. Small or Base keep up live more easily; \
-                 a build with --features vulkan or cuda uses the graphics card.",
-            );
+        match crate::transcriber::GPU {
+            Some(gpu) => {
+                ui.weak(format!("Whisper runs on the graphics card ({gpu})."));
+            }
+            None => {
+                ui.weak(crate::gpu::why_cpu().unwrap_or(
+                    "This build runs Whisper on the processor; a build with --features vulkan or cuda uses the \
+                     graphics card.",
+                ));
+                ui.weak("On the processor, Small or Base keep up live more easily.");
+            }
+        }
+        if !cfg!(target_os = "macos") {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.use_gpu, "Use the graphics card when there is one")
+                    .on_hover_text("CUDA on NVIDIA cards, Vulkan on others. Takes effect when the app is next opened.");
+                if crate::gpu::has_failures()
+                    && ui
+                        .small_button("Try it again")
+                        .on_hover_text("A graphics-card build did not start before. Try it at the next opening.")
+                        .clicked()
+                {
+                    crate::gpu::forget_failures();
+                }
+            });
         }
         if self.recording() {
             ui.colored_label(ui.visuals().warn_fg_color, "Stop recording to switch models.");

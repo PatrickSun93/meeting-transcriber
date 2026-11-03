@@ -19,6 +19,52 @@ pub use system::{
 };
 pub use tray::Tray;
 
+const INSTALL_HOW: &str = "Drag Meeting Transcriber.app to Applications.";
+
+/// Installing is Windows' (the zip has no installer); here the package's
+/// own way installs it.
+pub fn installed() -> bool {
+    true
+}
+
+pub fn running_from_temp() -> bool {
+    false
+}
+
+pub fn install_dir() -> std::path::PathBuf {
+    std::path::PathBuf::new()
+}
+
+pub fn install(_desktop: bool) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
+pub fn open_installed(_exe: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+pub fn uninstall() -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
+/// What the system allows the app, for `meeting-transcriber doctor`. Asked
+/// of whatever runs the command: a terminal has permissions of its own.
+pub fn diagnostics() -> Vec<(&'static str, String)> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightListenEventAccess() -> bool;
+        fn CGPreflightPostEventAccess() -> bool;
+    }
+    let yes_no = |ok: bool| if ok { "allowed" } else { "not allowed" }.to_string();
+    // SAFETY: plain queries of this process's permissions, no arguments.
+    unsafe {
+        vec![
+            ("input_monitoring", yes_no(CGPreflightListenEventAccess())),
+            ("accessibility", yes_no(CGPreflightPostEventAccess())),
+        ]
+    }
+}
+
 pub const SHOW_IN_FILES: &str = "Show in Finder";
 pub const THIS_COMPUTER: &str = "this Mac";
 /// What the Others source records.

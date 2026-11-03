@@ -23,6 +23,55 @@ pub use system::{
 };
 pub use tray::Tray;
 
+const INSTALL_HOW: &str = "Run install.sh from the package (or scripts/install-linux.sh from a checkout).";
+
+/// Installing is Windows' (the zip has no installer); here the package's
+/// own way installs it.
+pub fn installed() -> bool {
+    true
+}
+
+pub fn running_from_temp() -> bool {
+    false
+}
+
+pub fn install_dir() -> std::path::PathBuf {
+    std::path::PathBuf::new()
+}
+
+pub fn install(_desktop: bool) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
+pub fn open_installed(_exe: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+pub fn uninstall() -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
+/// Where the hotkey can come from in this session, for
+/// `meeting-transcriber doctor`.
+pub fn diagnostics() -> Vec<(&'static str, String)> {
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
+    let session = if system::wayland() { "wayland" } else { "x11" };
+    vec![
+        ("session", session.into()),
+        ("display", var("DISPLAY")),
+        ("wayland_display", var("WAYLAND_DISPLAY")),
+        ("desktop", var("XDG_CURRENT_DESKTOP")),
+        (
+            "hotkey_source",
+            if system::wayland() {
+                "the desktop's global shortcuts portal, or `dictate` bound to a shortcut".into()
+            } else {
+                "XInput 2 raw key events".into()
+            },
+        ),
+    ]
+}
+
 pub const SHOW_IN_FILES: &str = "Show in folder";
 pub const THIS_COMPUTER: &str = "this computer";
 /// What the Others source records.

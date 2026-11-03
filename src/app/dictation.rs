@@ -185,7 +185,7 @@ impl App {
                 let probe = watch.clone();
                 self.dict
                     .dictation
-                    .set_key_probe(move || platform::hotkey_held(probe.key()));
+                    .set_key_probe(move || platform::hotkey_held(&probe.key()));
                 self.dict.hotkey = Some(watch);
                 self.dict.hotkey_error = None;
             }

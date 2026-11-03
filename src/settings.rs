@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::dictation::DictationConfig;
+#[cfg(test)]
 use crate::dictation::hotkey::Hotkey;
+use crate::dictation::hotkey::Shortcut;
 use crate::dictation::ollama::{self, OllamaConfig};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +25,9 @@ pub struct Settings {
     /// otherwise. Saved before the move starts, so a move cut short (the
     /// app quit, the Mac slept) is finished on the next launch.
     pub models_move_from: String,
+    /// Run Whisper on the graphics card when there is one (Windows: picks
+    /// the CUDA or Vulkan build next to the program; see `gpu`).
+    pub use_gpu: bool,
     pub dictation: DictationSettings,
 }
 
@@ -30,7 +35,8 @@ pub struct Settings {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictationSettings {
     pub enabled: bool,
-    /// A `Hotkey` name, e.g. `right_alt` or `vk:105`.
+    /// A `Shortcut` name: one key (`right_alt`, `vk:105`) or a combination
+    /// (`ctrl+shift+vk:68`).
     pub hotkey: String,
     /// Empty for auto-detect.
     pub language: String,
@@ -53,7 +59,7 @@ impl Default for DictationSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: Hotkey::default().name(),
+            hotkey: Shortcut::default().name(),
             language: String::new(),
             initial_prompt: String::new(),
             auto_paste: true,
@@ -94,8 +100,8 @@ impl DictationSettings {
         }
     }
 
-    pub fn hotkey(&self) -> Hotkey {
-        Hotkey::parse(&self.hotkey).unwrap_or_default()
+    pub fn hotkey(&self) -> Shortcut {
+        Shortcut::parse(&self.hotkey).unwrap_or_default()
     }
 
     pub fn recordings_dir_path(&self) -> PathBuf {
@@ -132,6 +138,7 @@ impl Default for Settings {
             capture_me: true,
             capture_others: true,
             remove_echo: true,
+            use_gpu: true,
             models_dir: String::new(),
             meetings_dir: String::new(),
             models_move_from: String::new(),
@@ -186,6 +193,7 @@ impl Settings {
                 "models_dir" => s.models_dir = value.to_string(),
                 "meetings_dir" => s.meetings_dir = value.to_string(),
                 "models_move_from" => s.models_move_from = value.to_string(),
+                "use_gpu" => s.use_gpu = flag,
                 key => s.dictation.parse_line(key, value),
             }
         }
@@ -203,7 +211,7 @@ impl Settings {
                 .join(" ")
         };
         format!(
-            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\nmodels_move_from={}\n\
+            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\nmodels_move_from={}\nuse_gpu={}\n\
              dictation={}\ndictation_hotkey={}\ndictation_language={}\ndictation_prompt={}\ndictation_auto_paste={}\n\
              dictation_sounds={}\ndictation_save_recordings={}\ndictation_recordings_dir={}\n\
              dictation_min_seconds={}\ndictation_max_seconds={}\n\
@@ -216,6 +224,7 @@ impl Settings {
             self.models_dir,
             self.meetings_dir,
             self.models_move_from,
+            self.use_gpu,
             d.enabled,
             d.hotkey,
             d.language,
@@ -281,6 +290,7 @@ mod tests {
             capture_me: false,
             capture_others: true,
             remove_echo: false,
+            use_gpu: false,
             models_dir: "/Volumes/Big Disk/whisper=models".into(),
             meetings_dir: "~/Notes/Meetings".into(),
             models_move_from: "/Volumes/Old Disk/models".into(),
@@ -316,7 +326,7 @@ mod tests {
         assert_eq!(old.models_move_from_path(), None);
         // …and before dictation: voice2cursor's defaults.
         assert_eq!(old.dictation, DictationSettings::default());
-        assert_eq!(old.dictation.hotkey(), Hotkey::default());
+        assert_eq!(old.dictation.hotkey(), Shortcut::default());
         let cfg = old.dictation.config();
         assert_eq!((cfg.min_seconds, cfg.max_seconds), (0.35, 300.0));
         assert!(cfg.enabled && cfg.auto_paste && cfg.sounds && cfg.save_recordings);
@@ -329,13 +339,20 @@ mod tests {
         let s = Settings::parse(
             "dictation_hotkey=alt_r\ndictation_min_seconds=abc\ndictation_max_seconds=NaN\nollama=true",
         );
-        assert_eq!(s.dictation.hotkey(), Hotkey::RightAlt);
+        assert_eq!(s.dictation.hotkey(), Shortcut::from(Hotkey::RightAlt));
         assert_eq!(s.dictation.min_seconds, 0.35);
         assert_eq!(s.dictation.max_seconds, 300.0);
         assert!(s.dictation.config().ollama.is_some());
         assert_eq!(
             Settings::parse("dictation_hotkey=nonsense").dictation.hotkey(),
-            Hotkey::default()
+            Shortcut::default()
+        );
+        assert_eq!(
+            Settings::parse("dictation_hotkey=ctrl+shift+vk:68")
+                .dictation
+                .hotkey()
+                .name(),
+            "ctrl+shift+vk:68"
         );
         let mut multi = Settings::default();
         multi.dictation.initial_prompt = "first line\nsecond=line\r\n".into();
