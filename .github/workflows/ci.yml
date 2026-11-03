@@ -27,13 +27,11 @@ concurrency:
 env:
   # Whether this run builds the graphics-card builds (see above).
   GPU: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu') }}
-  # sccache keeps compiled Rust, C++ (whisper.cpp) and CUDA in the Actions
-  # cache, so code that did not change is not compiled again.
+  # sccache keeps compiled Rust in the Actions cache, so code that did not
+  # change is not compiled again; on macOS and Linux also C++ (whisper.cpp)
+  # and CUDA (see the jobs: MSVC's shared debug-info files can't be cached).
   SCCACHE_GHA_ENABLED: 'true'
   RUSTC_WRAPPER: sccache
-  CMAKE_C_COMPILER_LAUNCHER: sccache
-  CMAKE_CXX_COMPILER_LAUNCHER: sccache
-  CMAKE_CUDA_COMPILER_LAUNCHER: sccache
   # Turing to Blackwell, plus PTX for newer cards (CUDA add-ons).
   CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
 
@@ -41,6 +39,9 @@ jobs:
   macos:
     # Apple Silicon runner: builds the real app with Metal and ScreenCaptureKit.
     runs-on: macos-15
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -68,6 +69,9 @@ jobs:
     # The processor build, plus (GPU runs) a Vulkan build in vulkan/ that it
     # starts when the graphics driver has Vulkan; Others is recorded with parec.
     runs-on: ubuntu-latest
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -95,6 +99,10 @@ jobs:
     # which the app downloads when it finds an NVIDIA card (src/cuda_addon.rs).
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: ubuntu-24.04
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -121,10 +129,6 @@ jobs:
     # vulkan\ that it starts when the graphics driver has Vulkan; Others is
     # recorded with WASAPI loopback.
     runs-on: windows-latest
-    env:
-      # Ninja from a developer shell: sccache works with it (not with the
-      # Visual Studio generator), and the Vulkan shader tool finds cl.exe.
-      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -132,9 +136,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
-        shell: pwsh
-      - uses: ilammy/msvc-dev-cmd@v1
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: Vulkan SDK
@@ -145,6 +146,12 @@ jobs:
           Start-Process -Wait -FilePath .\vulkan-sdk.exe -ArgumentList '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
           "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "C:\VulkanSDK\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # The Vulkan build needs Ninja and cl.exe on the PATH (see the script).
+      - if: env.GPU == 'true'
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
+        shell: pwsh
+      - if: env.GPU == 'true'
+        uses: ilammy/msvc-dev-cmd@v1
       - run: ./scripts/package-windows.ps1 ${{ env.GPU == 'true' && '-Vulkan' || '' }}
         shell: pwsh
         env:
@@ -158,11 +165,9 @@ jobs:
   windows-cuda:
     # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
     # cuda\. Visual Studio 2022, which CUDA 12 supports (windows-latest has
-    # a newer one), with Ninja from its developer shell.
+    # a newer one).
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: windows-2022
-    env:
-      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -173,9 +178,6 @@ jobs:
           cuda: '12.9.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
-        shell: pwsh
-      - uses: ilammy/msvc-dev-cmd@v1
       - run: ./scripts/package-windows.ps1 -CudaAddon
         shell: pwsh
         env:

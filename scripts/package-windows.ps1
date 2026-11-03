@@ -11,8 +11,9 @@
 # CUDA's runtime DLLs), which the app downloads from the release of its
 # version when it finds an NVIDIA card (src/cuda_addon.rs).
 #
-# -Vulkan needs the Vulkan SDK; -CudaAddon the CUDA toolkit (CUDA_PATH).
-# Both need Ninja and a Developer PowerShell for Visual Studio.
+# -Vulkan needs the Vulkan SDK, Ninja and a Developer PowerShell for Visual
+# Studio; -CudaAddon the CUDA toolkit (CUDA_PATH) with its Visual Studio
+# integration.
 param([switch]$Vulkan, [switch]$CudaAddon)
 $ErrorActionPreference = 'Stop'
 
@@ -35,7 +36,8 @@ function Add-GpuBuild([string]$feature, [string]$into) {
     # shaders, which under the Visual Studio generator finds no compiler.
     # Ninja, from a developer shell (cl.exe on the PATH), lets it find one.
     $generator = $env:CMAKE_GENERATOR
-    if ((Get-Command ninja -ErrorAction SilentlyContinue) -and (Get-Command cl -ErrorAction SilentlyContinue)) {
+    if ($feature -eq 'vulkan' -and (Get-Command ninja -ErrorAction SilentlyContinue) -and
+        (Get-Command cl -ErrorAction SilentlyContinue)) {
         $env:CMAKE_GENERATOR = 'Ninja'
     }
     cargo build --release --features $feature --target-dir $dir
