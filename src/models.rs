@@ -289,41 +289,57 @@ fn copy_then_remove(src: &Path, dst: &Path) -> Result<()> {
 
 /// Downloads a model, reporting (bytes done, bytes total). Writes to a
 /// `.part` file first so an interrupted download is never mistaken for a model.
-pub fn download(
-    model: ModelInfo,
-    cancel: Arc<AtomicBool>,
-    mut progress: impl FnMut(u64, Option<u64>),
-) -> Result<PathBuf> {
+pub fn download(model: ModelInfo, cancel: Arc<AtomicBool>, progress: impl FnMut(u64, Option<u64>)) -> Result<PathBuf> {
     // Always into the models folder, never the old folder of a move.
     let target = models_dir().join(model.file);
     let dir = target.parent().context("model path has no folder")?;
     std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     let part = target.with_extension("bin.part");
 
-    let response = ureq::get(&model.url())
+    download_file(&model.url(), &part, cancel, progress)?;
+    std::fs::rename(&part, &target).context("could not move the downloaded model into place")?;
+    Ok(target)
+}
+
+/// Downloads `url` into `part`, reporting (bytes done, bytes total); on
+/// failure or `cancel`, `part` is removed.
+pub fn download_file(
+    url: &str,
+    part: &Path,
+    cancel: Arc<AtomicBool>,
+    mut progress: impl FnMut(u64, Option<u64>),
+) -> Result<()> {
+    let response = ureq::get(url)
         .call()
-        .with_context(|| format!("could not download {}", model.url()))?;
+        .with_context(|| format!("could not download {url}"))?;
     let total = response
         .headers()
         .get("content-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
     let mut reader = response.into_body().into_reader();
-    let mut file = File::create(&part).with_context(|| format!("could not write {}", part.display()))?;
+    let mut file = File::create(part).with_context(|| format!("could not write {}", part.display()))?;
 
     let mut buf = vec![0u8; 1 << 20];
     let mut done = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) {
             drop(file);
-            let _ = std::fs::remove_file(&part);
+            let _ = std::fs::remove_file(part);
             bail!("download cancelled");
         }
-        let n = reader.read(&mut buf).context("download interrupted")?;
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) => {
+                drop(file);
+                let _ = std::fs::remove_file(part);
+                return Err(e).context("download interrupted");
+            }
+        };
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n]).context("could not write model file")?;
+        file.write_all(&buf[..n]).context("could not write the download")?;
         done += n as u64;
         progress(done, total);
     }
@@ -333,11 +349,10 @@ pub fn download(
     if let Some(total) = total
         && done != total
     {
-        let _ = std::fs::remove_file(&part);
+        let _ = std::fs::remove_file(part);
         bail!("download incomplete ({done} of {total} bytes)");
     }
-    std::fs::rename(&part, &target).context("could not move the downloaded model into place")?;
-    Ok(target)
+    Ok(())
 }
 
 #[cfg(test)]

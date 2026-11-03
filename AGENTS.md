@@ -53,6 +53,10 @@ Transcripts go to `Documents/Meeting Transcripts` unless changed in Settings
   Microphone, including "Let desktop apps access your microphone"). Others
   records only the default output device. If audio did come in, Whisper may
   be slow on the processor: lines can arrive a minute after stopping.
+- **Slow transcription on a PC with a graphics card**: `meeting-transcriber gpu`
+  says where Whisper runs and why. With an NVIDIA card and `cuda_addon: not
+  installed`, `meeting-transcriber gpu install-cuda` downloads CUDA support
+  (no CUDA toolkit is needed; the driver is enough), used after a restart.
 - **Hotkey does nothing**: compare `doctor`'s `hotkey` with what `keys`
   prints when the user presses it.
 

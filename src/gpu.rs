@@ -89,8 +89,8 @@ pub fn cpu_reason(use_gpu: bool, found: &Found, failed: &[Backend]) -> String {
         return "Using the graphics card is off in Settings.".into();
     }
     if found.builds.is_empty() {
-        return "This copy has no graphics-card build beside it (the cuda or vulkan folder of the Windows \
-                package), so Whisper runs on the processor."
+        return "This copy has no graphics-card build beside it (the vulkan folder of the package, or CUDA \
+                support downloaded in Settings), so Whisper runs on the processor."
             .into();
     }
     let tried: Vec<&str> = failed
@@ -161,7 +161,26 @@ pub fn parse_failures(text: &str, stamp_now: impl Fn(Backend) -> Option<String>)
         .collect()
 }
 
-fn build_exe(dir: &Path, backend: Backend) -> PathBuf {
+/// The folder of the program people start, which the GPU builds sit beside.
+pub fn program_dir() -> Option<PathBuf> {
+    launcher_exe()?.parent().map(Path::to_path_buf)
+}
+
+/// The version a build was made for, when it says (`version.txt`, which the
+/// CUDA add-on has; the builds in the package come with their program).
+pub fn build_version(dir: &Path, backend: Backend) -> Option<String> {
+    std::fs::read_to_string(dir.join(backend.folder()).join("version.txt"))
+        .ok()
+        .map(|v| v.trim().to_string())
+}
+
+/// Whether a build is beside the program and made for this version of it:
+/// a build of another version would run that version instead.
+pub fn build_fits(dir: &Path, backend: Backend) -> bool {
+    build_exe(dir, backend).is_file() && build_version(dir, backend).is_none_or(|v| v == env!("CARGO_PKG_VERSION"))
+}
+
+pub fn build_exe(dir: &Path, backend: Backend) -> PathBuf {
     dir.join(backend.folder())
         .join(format!("meeting-transcriber{}", std::env::consts::EXE_SUFFIX))
 }
@@ -200,7 +219,7 @@ pub fn report() -> Vec<(&'static str, String)> {
     if cfg!(target_os = "macos") || gpu.is_some() {
         return facts;
     }
-    let Some(dir) = launcher_exe().and_then(|e| e.parent().map(Path::to_path_buf)) else {
+    let Some(dir) = program_dir() else {
         return facts;
     };
     let found = find(&dir);
@@ -216,6 +235,7 @@ pub fn report() -> Vec<(&'static str, String)> {
         }
     };
     facts.push(("gpu_builds", names(&found.builds)));
+    facts.push(("cuda_addon", crate::cuda_addon::state().describe()));
     facts.push(("gpu_builds_failed", names(&failed)));
     let chosen = candidates(&found, &failed);
     facts.push((
@@ -230,19 +250,24 @@ pub fn report() -> Vec<(&'static str, String)> {
 
 #[cfg(not(target_os = "macos"))]
 fn find(dir: &Path) -> Found {
-    let builds: Vec<Backend> = Backend::ALL
-        .into_iter()
-        .filter(|b| build_exe(dir, *b).is_file())
-        .collect();
+    let builds: Vec<Backend> = Backend::ALL.into_iter().filter(|b| build_fits(dir, *b)).collect();
     Found {
-        nvidia_gpus: if builds.contains(&Backend::Cuda) {
-            drivers::nvidia_gpus()
-        } else {
-            0
-        },
+        nvidia_gpus: nvidia_gpus(),
         vulkan: builds.contains(&Backend::Vulkan) && drivers::vulkan(),
         builds,
     }
+}
+
+/// NVIDIA cards CUDA can use here, asked of the driver once.
+#[cfg(not(target_os = "macos"))]
+pub fn nvidia_gpus() -> usize {
+    static COUNT: OnceLock<usize> = OnceLock::new();
+    *COUNT.get_or_init(drivers::nvidia_gpus)
+}
+
+#[cfg(target_os = "macos")]
+pub fn nvidia_gpus() -> usize {
+    0
 }
 
 #[cfg(target_os = "macos")]

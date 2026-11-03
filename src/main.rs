@@ -38,6 +38,12 @@ Meeting Transcriber
       Prints the end of the app's log (errors from recording, Whisper
       and dictation), kept in the app data folder.
 
+  meeting-transcriber gpu [--json]
+  meeting-transcriber gpu install-cuda [--from URL_OR_ZIP]
+      Says where Whisper runs (processor, Vulkan, CUDA) and why. With an
+      NVIDIA card, install-cuda downloads CUDA support (about 600 MB, from
+      the release of this version) or unpacks a downloaded add-on zip.
+
   meeting-transcriber keys [--once] [--save] [--json]
       Prints every key or combination you hold and let go of, as the
       dictation hotkey watcher sees it, and its setting name. --once
@@ -114,6 +120,11 @@ fn main() -> Result<()> {
                 ),
             }
             Ok(())
+        }
+        Some("gpu") => {
+            let json = args.iter().any(|a| a == "--json");
+            let rest: Vec<String> = args[1..].iter().filter(|a| *a != "--json").cloned().collect();
+            cli::run_gpu(&rest, json)
         }
         Some("keys") => {
             let (set, json) = flags(&args[1..], &["--once", "--save"])?;

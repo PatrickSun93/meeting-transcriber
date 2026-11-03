@@ -12,7 +12,7 @@ A native app, written in Rust, that writes down your meetings as they happen. It
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
 - **Dictation**: hold Right Option (Mac) or Right Ctrl (Windows, Linux) anywhere and speak; let go and the text is pasted where the cursor is. It uses the same Whisper model as meetings, loaded once. See [Dictation](#dictation).
 
-Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the processor, or the graphics card with a Vulkan or CUDA build). It uses the `large-v3-turbo` model by default.
+Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the graphics card, with Vulkan or, on NVIDIA cards, CUDA, else the processor). It uses the `large-v3-turbo` model by default.
 
 ```
  microphone ──► Me ─────┐
@@ -75,6 +75,7 @@ scripts, bug reports and AI agents such as Claude Code (see [AGENTS.md](AGENTS.m
 | Command | What it does |
 |---|---|
 | `meeting-transcriber doctor [--json]` | What the app sees here: settings file, folders, models, hotkey, permissions, and what looks wrong |
+| `meeting-transcriber gpu [install-cuda [--from URL_OR_ZIP]]` | Where Whisper runs and why; with an NVIDIA card, downloads (or unpacks) CUDA support |
 | `meeting-transcriber log [--lines N]` | The end of the app's log (`meeting-transcriber.log` in the app data folder); on Windows, the only place errors go |
 | `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it; `--save` makes it the dictation hotkey |
 | `meeting-transcriber settings [path \| get KEY \| set KEY VALUE] [--json]` | Lists, reads or changes settings, checked before saving |
@@ -90,7 +91,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
-| Whisper runs on | the GPU (Metal) | the graphics card when there is one (CUDA on NVIDIA, Vulkan on others), else the processor | the same as Windows |
+| Whisper runs on | the GPU (Metal) | the graphics card when there is one (Vulkan; on NVIDIA cards CUDA, downloaded when wanted), else the processor | the same as Windows |
 | Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%LOCALAPPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
 | Folder dialog, file manager | Finder | Explorer | zenity or kdialog (else you type the path); the file manager over D-Bus, else `xdg-open` |
 | Dictation hotkey (default) | Right Option, any app (Input Monitoring) | Right Ctrl, any app | Right Ctrl on X11; on Wayland the desktop's shortcut, or `meeting-transcriber dictate toggle` bound to one ([details](#linux-1)) |
@@ -103,7 +104,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
-**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`; keep the `vulkan` folder beside it. With an NVIDIA card, get `Meeting-Transcriber-Windows-x86_64-NVIDIA.zip` instead (larger: it holds CUDA's DLLs in `cuda`), which is the fastest. The program starts the graphics-card build that runs on this PC, and runs Whisper on the processor when none does (**Settings → Model** says which, and can turn it off; `meeting-transcriber doctor` too). The first time, it offers to **Install** itself: it copies itself to `%LOCALAPPDATA%\Programs\Meeting Transcriber` (no administrator rights needed) and adds Meeting Transcriber to the Start menu and the desktop, so it is easy to find again; `meeting-transcriber install` does the same, `uninstall` takes the shortcuts away. Don't run it from inside the zip: Windows runs it from a temporary folder it later empties. Closing the window keeps it running in the notification area (perhaps under **^**). It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`; keep the `vulkan` folder beside it. The program starts the graphics-card build that runs on this PC, and runs Whisper on the processor when none does (**Settings → Model** says which, and can turn it off; `meeting-transcriber gpu` too). With an NVIDIA card, **Settings → Model** offers **Download CUDA support** (about 600 MB, the `-CUDA.zip` of the same release, which brings its own CUDA libraries: no CUDA toolkit needed), which is faster still; **Restart now** puts it to use. `meeting-transcriber gpu install-cuda` does the same, or `--from` a downloaded zip. The first time, it offers to **Install** itself: it copies itself to `%LOCALAPPDATA%\Programs\Meeting Transcriber` (no administrator rights needed) and adds Meeting Transcriber to the Start menu and the desktop, so it is easy to find again; `meeting-transcriber install` does the same, `uninstall` takes the shortcuts away. Don't run it from inside the zip: Windows runs it from a temporary folder it later empties. Closing the window keeps it running in the notification area (perhaps under **^**). It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
 
 To build it yourself instead:
 
@@ -130,7 +131,7 @@ To build it yourself instead:
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
-For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA). `.\scripts\package-windows.ps1 -Vulkan` (and `-Cuda`) packages the processor build with those in `vulkan\` and `cuda\`, which it then picks from at startup.
+For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA). `.\scripts\package-windows.ps1 -Vulkan` packages the processor build with the Vulkan build in `vulkan\`, which it starts when it can; `-CudaAddon` builds only the CUDA add-on zip (`cuda\` with CUDA's DLLs). Both need Ninja and a Developer PowerShell for Visual Studio.
 
 The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`. A release build is a windowed program, so the terminal shows its prompt again before the transcript is done; in Command Prompt, `start /wait meeting-transcriber.exe transcribe --me mic.wav` waits for it.
 
@@ -165,7 +166,7 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
 
 3. Open **Meeting Transcriber** from the app menu. It runs on X11 and Wayland.
 
-To hand it to someone else, `./scripts/package-linux.sh --vulkan` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program with a Vulkan build in `vulkan/`, its launcher and icon, and `install.sh`; add `--cuda` for the `-NVIDIA` archive with a CUDA build and CUDA's libraries in `cuda/`. The program starts the graphics-card build that runs here, else Whisper runs on the processor. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
+To hand it to someone else, `./scripts/package-linux.sh --vulkan` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program with a Vulkan build in `vulkan/`, its launcher and icon, and `install.sh`; `--cuda-addon` builds only the CUDA add-on zip (`cuda/` with CUDA's libraries), which the app downloads on PCs with an NVIDIA card. The program starts the graphics-card build that runs here, else Whisper runs on the processor. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
 
 ## Using it
 
@@ -299,7 +300,7 @@ cargo clippy --all-targets
 cargo run --release
 ```
 
-To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages to a new [GitHub release](https://github.com/PatrickSun93/meeting-transcriber/releases):
+To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages, and the CUDA add-ons, to a new [GitHub release](https://github.com/PatrickSun93/meeting-transcriber/releases). The app downloads its CUDA add-on from the release of its own version, so the release job checks that the tag matches `Cargo.toml`:
 
 ```bash
 git tag v0.2.0
@@ -314,7 +315,7 @@ MEETING_TRANSCRIBER_FAKE_ME=me.wav MEETING_TRANSCRIBER_FAKE_OTHERS=others.wav ca
 
 `MEETING_TRANSCRIBER_MODELS` points at a different model folder and overrides the folder chosen in Settings. The default is the `models` folder in the app data folder (see [Windows and Linux](#windows-and-linux) for where that is).
 
-CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and packages it on Windows and Linux, and attaches the Windows `.zip` and the Linux `.tar.gz`.
+CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.app` to each run. It also lints, tests and packages it on Windows and Linux, and attaches the Windows `.zip` and the Linux `.tar.gz`. On pull requests those packages are the processor builds only; the graphics-card builds (Vulkan, and the CUDA add-ons, which take the better part of an hour) are built on `main`, for version tags, and when the workflow is run by hand (**Actions → CI → Run workflow**), and for pull requests with the `gpu` label. sccache keeps compiled code between runs (on Windows only the Rust code).
 
 | File | Role |
 | --- | --- |

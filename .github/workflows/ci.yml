@@ -1,22 +1,50 @@
 name: CI
 
+# Pull requests get the quick checks and the processor packages. The
+# graphics-card builds (Vulkan in the packages, the CUDA add-ons) take long,
+# so they are built on main, for version tags, when run by hand, and for
+# pull requests labelled gpu.
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
+    # labeled: adding the gpu label starts a run with the GPU builds.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: Also build the graphics-card builds (Vulkan, CUDA add-ons)
+        type: boolean
+        default: true
 
 # A newer push to the same branch cancels its older runs, which would only
-# hold up the runners (the GPU builds take a while). Release tags always
-# run to the end.
+# hold up the runners. Release tags always run to the end.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # Whether this run builds the graphics-card builds (see above).
+  GPU: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu') }}
+  # sccache keeps compiled Rust in the Actions cache, so code that did not
+  # change is not compiled again; on macOS and Linux also C++ (whisper.cpp)
+  # and CUDA (see the jobs: MSVC's shared debug-info files can't be cached).
+  SCCACHE_GHA_ENABLED: 'true'
+  RUSTC_WRAPPER: sccache
+  # Turing to Blackwell, plus PTX for newer cards (CUDA add-ons).
+  CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
 
 jobs:
   macos:
     # Apple Silicon runner: builds the real app with Metal and ScreenCaptureKit.
     runs-on: macos-15
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       # screencapturekit's Swift bridge (via apple-metal) needs the macOS 26 SDK.
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -38,11 +66,15 @@ jobs:
           path: target/release/bundle/Meeting-Transcriber-macOS.zip
 
   linux:
-    # The processor build, plus a Vulkan build in vulkan/ that it starts
-    # when the graphics driver has Vulkan; Others is recorded with parec.
+    # The processor build, plus (GPU runs) a Vulkan build in vulkan/ that it
+    # starts when the graphics driver has Vulkan; Others is recorded with parec.
     runs-on: ubuntu-latest
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -56,21 +88,24 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: ./scripts/package-linux.sh --vulkan
+      - run: ./scripts/package-linux.sh ${{ env.GPU == 'true' && '--vulkan' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Linux-x86_64
           path: target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz
 
-  linux-nvidia:
-    # The processor build plus a CUDA build in cuda/, with CUDA's runtime
-    # libraries: for NVIDIA cards. Tested by the linux job; this one builds.
+  linux-cuda:
+    # The CUDA add-on: a CUDA build and CUDA's runtime libraries in cuda/,
+    # which the app downloads when it finds an NVIDIA card (src/cuda_addon.rs).
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: ubuntu-24.04
     env:
-      # Turing to Blackwell, plus PTX for newer cards.
-      CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: CUDA toolkit
@@ -83,19 +118,20 @@ jobs:
           sudo ln -sfn /usr/local/cuda-12.9 /usr/local/cuda
           echo "CUDA_PATH=/usr/local/cuda-12.9" >> "$GITHUB_ENV"
           echo "/usr/local/cuda-12.9/bin" >> "$GITHUB_PATH"
-      - run: ./scripts/package-linux.sh --cuda
+      - run: ./scripts/package-linux.sh --cuda-addon
       - uses: actions/upload-artifact@v4
         with:
-          name: Meeting-Transcriber-Linux-x86_64-NVIDIA
-          path: target/release/package/Meeting-Transcriber-Linux-x86_64-NVIDIA.tar.gz
+          name: Meeting-Transcriber-Linux-x86_64-CUDA
+          path: target/release/package/Meeting-Transcriber-Linux-x86_64-CUDA.zip
 
   windows:
-    # The processor build with MSVC, plus a Vulkan build in vulkan\ that it
-    # starts when the graphics driver has Vulkan; Others is recorded with
-    # WASAPI loopback.
+    # The processor build with MSVC, plus (GPU runs) a Vulkan build in
+    # vulkan\ that it starts when the graphics driver has Vulkan; Others is
+    # recorded with WASAPI loopback.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -103,6 +139,7 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: Vulkan SDK
+        if: env.GPU == 'true'
         shell: pwsh
         run: |
           Invoke-WebRequest https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe -OutFile vulkan-sdk.exe
@@ -110,10 +147,12 @@ jobs:
           "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "C:\VulkanSDK\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       # The Vulkan build needs Ninja and cl.exe on the PATH (see the script).
-      - run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
+      - if: env.GPU == 'true'
+        run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
         shell: pwsh
-      - uses: ilammy/msvc-dev-cmd@v1
-      - run: ./scripts/package-windows.ps1 -Vulkan
+      - if: env.GPU == 'true'
+        uses: ilammy/msvc-dev-cmd@v1
+      - run: ./scripts/package-windows.ps1 ${{ env.GPU == 'true' && '-Vulkan' || '' }}
         shell: pwsh
         env:
           # Short, or the Vulkan shader tool's paths pass Windows' limit.
@@ -123,16 +162,15 @@ jobs:
           name: Meeting-Transcriber-Windows-x86_64
           path: target/release/package/Meeting-Transcriber-Windows-x86_64.zip
 
-  windows-nvidia:
-    # The processor build plus a CUDA build in cuda\, with CUDA's runtime
-    # DLLs: for NVIDIA cards. Tested by the windows job; this one builds.
-    # Visual Studio 2022: CUDA 12's build rules have no toolset for the
-    # newer Visual Studio on windows-latest ("No CUDA toolset found").
+  windows-cuda:
+    # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
+    # cuda\. Visual Studio 2022, which CUDA 12 supports (windows-latest has
+    # a newer one).
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
     runs-on: windows-2022
-    env:
-      CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
     steps:
       - uses: actions/checkout@v4
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: Jimver/cuda-toolkit@v0.2.36
@@ -140,25 +178,35 @@ jobs:
           cuda: '12.9.1'
           method: network
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      - run: ./scripts/package-windows.ps1 -Cuda
+      - run: ./scripts/package-windows.ps1 -CudaAddon
         shell: pwsh
         env:
           GPU_TARGET_DIR: C:\b
       - uses: actions/upload-artifact@v4
         with:
-          name: Meeting-Transcriber-Windows-x86_64-NVIDIA
-          path: target/release/package/Meeting-Transcriber-Windows-x86_64-NVIDIA.zip
+          name: Meeting-Transcriber-Windows-x86_64-CUDA
+          path: target/release/package/Meeting-Transcriber-Windows-x86_64-CUDA.zip
 
   release:
     # Pushing a version tag (git tag v0.2.0 && git push origin v0.2.0)
-    # publishes the three packages as a GitHub release, once all three
-    # builds and their tests have passed.
+    # publishes the packages and the CUDA add-ons as a GitHub release, once
+    # every build and its tests have passed. The app downloads its CUDA
+    # add-on from the release of its own version, so the tag must match
+    # the version in Cargo.toml.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, linux, linux-nvidia, windows, windows-nvidia]
+    needs: [macos, linux, linux-cuda, windows, windows-cuda]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -168,6 +216,7 @@ jobs:
           --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
           --notes "**The Windows and Linux builds are untested.** They compile and pass
           their unit tests in CI, but have not been run on a real PC yet and may have
-          problems. The macOS build is the one in daily use." 
+          problems. The macOS build is the one in daily use. The -CUDA zips are the
+          CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
         env:
           GH_TOKEN: ${{ github.token }}

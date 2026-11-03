@@ -97,6 +97,25 @@ struct Engine {
     progress: Progress,
 }
 
+/// Set for a copy started by `App::restart`.
+pub(crate) const RESTARTED_ENV: &str = "MEETING_TRANSCRIBER_RESTARTED";
+
+/// The CUDA add-on in the window (Settings > Model).
+#[derive(Default)]
+struct CudaAddon {
+    /// Looked at once (it asks the graphics driver), and after installing.
+    state: Option<crate::cuda_addon::State>,
+    download: Option<CudaDownload>,
+    /// Installed while the app runs: a restart puts it to use.
+    installed: bool,
+}
+
+struct CudaDownload {
+    progress: Arc<Mutex<(u64, Option<u64>)>>,
+    cancel: Arc<AtomicBool>,
+    done: Receiver<anyhow::Result<PathBuf>>,
+}
+
 struct Download {
     model: ModelInfo,
     progress: Arc<Mutex<(u64, Option<u64>)>>,
@@ -177,6 +196,7 @@ pub struct App {
     dict: DictationState,
     /// Offering to install (Windows, when run from wherever it was unzipped).
     install_offer: bool,
+    cuda_addon: CudaAddon,
 }
 
 /// Marks that the user does not want to be asked to install.
@@ -247,6 +267,7 @@ impl App {
             sidebar_tab: SidebarTab::Meetings,
             dict,
             install_offer: !platform::installed() && !install_declined_path().is_file(),
+            cuda_addon: CudaAddon::default(),
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -742,6 +763,25 @@ impl App {
         if settings != self.saved_settings {
             settings.save();
             self.saved_settings = settings;
+        }
+    }
+
+    /// Quits and opens the app again (from the program people start, which
+    /// chooses the graphics-card build afresh), saving everything first.
+    fn restart(&mut self) {
+        let Some(exe) = crate::gpu::launcher_exe() else {
+            self.errors
+                .push("Could not find where the app is; open it again yourself.".into());
+            return;
+        };
+        self.stop_session();
+        self.finish_pending();
+        self.save_settings_if_changed();
+        match std::process::Command::new(&exe).env(RESTARTED_ENV, "1").spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => self
+                .errors
+                .push(format!("Could not open the app again: {e}. Open it yourself.")),
         }
     }
 
