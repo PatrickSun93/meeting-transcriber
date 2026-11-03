@@ -73,7 +73,7 @@ fn request_body(text: &str, model: &str) -> String {
 }
 
 /// A JSON string literal.
-fn json_string(s: &str) -> String {
+pub fn json_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

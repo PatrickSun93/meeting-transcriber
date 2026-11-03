@@ -23,6 +23,27 @@ pub use system::{
 };
 pub use tray::Tray;
 
+/// Where the hotkey can come from in this session, for
+/// `meeting-transcriber doctor`.
+pub fn diagnostics() -> Vec<(&'static str, String)> {
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
+    let session = if system::wayland() { "wayland" } else { "x11" };
+    vec![
+        ("session", session.into()),
+        ("display", var("DISPLAY")),
+        ("wayland_display", var("WAYLAND_DISPLAY")),
+        ("desktop", var("XDG_CURRENT_DESKTOP")),
+        (
+            "hotkey_source",
+            if system::wayland() {
+                "the desktop's global shortcuts portal, or `dictate` bound to a shortcut".into()
+            } else {
+                "XInput 2 raw key events".into()
+            },
+        ),
+    ]
+}
+
 pub const SHOW_IN_FILES: &str = "Show in folder";
 pub const THIS_COMPUTER: &str = "this computer";
 /// What the Others source records.

@@ -67,6 +67,19 @@ Dictation needs two more, both in **System Settings → Privacy & Security**:
 
 The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `./scripts/bundle-macos.sh --install`, switch Input Monitoring and Accessibility (like the other two) off and on again for **Meeting Transcriber**, then quit and reopen it.
 
+## Command line and AI agents
+
+Besides opening the window, the program answers on the command line, for
+scripts, bug reports and AI agents such as Claude Code (see [AGENTS.md](AGENTS.md)):
+
+| Command | What it does |
+|---|---|
+| `meeting-transcriber doctor [--json]` | What the app sees here: settings file, folders, models, hotkey, permissions, and what looks wrong |
+| `meeting-transcriber log [--lines N]` | The end of the app's log (`meeting-transcriber.log` in the app data folder); on Windows, the only place errors go |
+| `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it; `--save` makes it the dictation hotkey |
+| `meeting-transcriber settings [path \| get KEY \| set KEY VALUE] [--json]` | Lists, reads or changes settings, checked before saving |
+| `meeting-transcriber transcribe …` | Transcribes WAV files (see `meeting-transcriber help`) |
+
 ## Windows and Linux
 
 > [!WARNING]
@@ -218,7 +231,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 
 ### Windows
 
-- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Press a key…** takes any other key.
+- **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Record keys…** takes any other key or combination (hold it, then let go); a combination's keys are kept from the app in front while it is held.
 - **Pasting** presses Ctrl+V. Windows does not let an app type into one running as administrator, so in such a window the text is only copied: press Ctrl+V yourself.
 - **Sounds** are the system's *Device Connect* (start), *Notification* (done) and *Critical Stop* (error), as set in **Settings → System → Sound → More sound settings**. Like everything the PC plays, they are part of a meeting's *Others* track while you record one.
 - **Tray**: the icon in the notification area is a coloured microphone (green ready, red recording, amber transcribing, grey paused or loading, crimson `!` after an error). Left-click opens the window; right-click shows the last 10 dictations (click to copy), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app there; Windows may tuck the icon under the **^** arrow, and **Settings → Personalization → Taskbar → Other system tray icons** keeps it in view.
@@ -228,7 +241,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 
 How dictation hears the hotkey depends on the session:
 
-- **X11**: Right Ctrl by default, seen in every app through XInput 2, like on the other systems; **Press a key…** takes any other key. Pasting presses Ctrl+V through XTest. Nothing needs to be installed or allowed.
+- **X11**: Right Ctrl by default, seen in every app through XInput 2, like on the other systems; **Record keys…** takes any other key or combination (hold it, then let go); a combination's keys are kept from the app in front while it is held. Pasting presses Ctrl+V through XTest. Nothing needs to be installed or allowed.
 - **Wayland**: apps may not watch the keyboard, so the app asks the desktop for a global shortcut through the [GlobalShortcuts portal](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html) (KDE Plasma 5.27+, GNOME 48+, Hyprland). The desktop asks you once which keys to use; holding them records and letting go transcribes. The Dictation settings show the keys, and the desktop's shortcut settings change them. Pasting on Wayland needs [`wtype`](https://github.com/atx/wtype) (KDE, Sway, Hyprland) or [`ydotool`](https://github.com/ReimuNotMoe/ydotool) with its `ydotoold` service running (GNOME, which wtype can't type into; the older 0.1 versions in Debian 12 and Ubuntu 22.04 work too); without either, the text is only copied, which the app says once.
 - **Any session, any key**: the running app also takes commands, so any shortcut can dictate:
 

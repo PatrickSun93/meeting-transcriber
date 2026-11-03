@@ -20,6 +20,12 @@ pub use system::{
 };
 pub use tray::Tray;
 
+/// What the system allows the app, for `meeting-transcriber doctor`: the
+/// keyboard hook needs no permission on Windows.
+pub fn diagnostics() -> Vec<(&'static str, String)> {
+    vec![("keyboard_hook", "needs no permission".into())]
+}
+
 pub const SHOW_IN_FILES: &str = "Show in Explorer";
 pub const THIS_COMPUTER: &str = "this PC";
 /// What the Others source records.

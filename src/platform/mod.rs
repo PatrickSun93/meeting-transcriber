@@ -43,8 +43,8 @@ pub use imp::attach_console;
 pub use imp::send_dictate_command;
 pub use imp::{
     AUTOSTART, DICTATION, HAS_TRAY, HOTKEY_HINT, MIC_ACCESS_HINT, NO_DIALOG_HINT, NO_MIC_HINT, PASTE_SHORTCUT,
-    SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, Tray, hide_app, hotkey_held, open_at_login, open_file, open_folder,
-    open_hotkey_settings, paste, play_sound, reveal, set_open_at_login, show_app,
+    SHOW_IN_FILES, SYSTEM_AUDIO, THIS_COMPUTER, Tray, diagnostics, hide_app, hotkey_held, open_at_login, open_file,
+    open_folder, open_hotkey_settings, paste, play_sound, reveal, set_open_at_login, show_app,
 };
 
 /// The button on the hotkey banner that opens the system's settings for
