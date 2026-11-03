@@ -108,6 +108,9 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
       - run: ./scripts/package-windows.ps1 -Vulkan
         shell: pwsh
+        env:
+          # Short, or the Vulkan shader tool's paths pass Windows' limit.
+          GPU_TARGET_DIR: C:\b
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Windows-x86_64
@@ -132,6 +135,8 @@ jobs:
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
       - run: ./scripts/package-windows.ps1 -Cuda
         shell: pwsh
+        env:
+          GPU_TARGET_DIR: C:\b
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Windows-x86_64-NVIDIA

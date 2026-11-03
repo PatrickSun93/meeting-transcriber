@@ -33,7 +33,11 @@ Copy-Item (Join-Path $target 'release\meeting-transcriber.exe') $stage
 
 # A graphics-card build in its own folder, built in its own target folder.
 function Add-GpuBuild([string]$feature) {
-    $dir = Join-Path $target $feature
+    # GPU_TARGET_DIR: a short folder for these builds. The Vulkan build's
+    # shader tool nests deep enough to pass Windows' path limit under a
+    # long checkout path.
+    $root = if ($env:GPU_TARGET_DIR) { $env:GPU_TARGET_DIR } else { $target }
+    $dir = Join-Path $root $feature
     # whisper.cpp's Vulkan build runs a CMake project of its own to make its
     # shaders, which under the Visual Studio generator finds no compiler.
     # Ninja, from a developer shell (cl.exe on the PATH), lets it find one.
