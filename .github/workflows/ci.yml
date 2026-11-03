@@ -116,7 +116,9 @@ jobs:
   windows-nvidia:
     # The processor build plus a CUDA build in cuda\, with CUDA's runtime
     # DLLs: for NVIDIA cards. Tested by the windows job; this one builds.
-    runs-on: windows-latest
+    # Visual Studio 2022: CUDA 12's build rules have no toolset for the
+    # newer Visual Studio on windows-latest ("No CUDA toolset found").
+    runs-on: windows-2022
     env:
       CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
     steps:
