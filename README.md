@@ -204,7 +204,7 @@ There is no AI summary: copy the meeting (**Copy all → As Markdown**) and summ
 
 Hold a key, speak, and let go: the text is typed where the cursor is, in any app.
 
-1. Hold **Right Option** on the Mac, **Right Ctrl** on Windows and Linux (the hotkey can be changed), in any app. You hear a short sound (*Tink* on the Mac).
+1. Hold **Right Option** on the Mac, **Right Ctrl** on Windows and Linux (the hotkey can be changed to any key or combination, such as Ctrl+Shift+D), in any app. You hear a short sound (*Tink* on the Mac).
 2. Speak, then let go. The text is copied and pasted where the cursor is (*Pop*; *Basso* if something failed). Presses shorter than 0.35 s are ignored, and recording stops on its own after 5 minutes.
 3. While a meeting is recording, what you say during dictation stays out of the meeting: *Me* is silent while the key is held.
 
@@ -264,7 +264,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
-| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Press a key…** for any other; on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
+| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
 
 ## Transcribe recordings
 

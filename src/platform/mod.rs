@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context as _, Result};
 use crossbeam_channel::Receiver;
 
+#[cfg(test)]
 use crate::dictation::hotkey::Hotkey;
+use crate::dictation::hotkey::Shortcut;
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod linux;
@@ -91,7 +93,7 @@ pub fn paste_note() -> Option<String> {
 }
 
 /// What the hotkey watcher reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyEvent {
     /// The hotkey went down…
     Down,
@@ -100,8 +102,9 @@ pub enum KeyEvent {
     /// Start dictating, or stop if dictating (Linux: `meeting-transcriber
     /// dictate toggle`).
     Toggle,
-    /// The key pressed while capturing (see `HotkeyWatch::capture_next`).
-    Captured(Hotkey),
+    /// The keys pressed while capturing (see `HotkeyWatch::capture_next`):
+    /// every key held until the first was let go of.
+    Captured(Shortcut),
     /// Escape was pressed while capturing.
     CaptureCancelled,
     /// The watcher ended (on macOS, Input Monitoring was switched off) and
@@ -112,7 +115,7 @@ pub enum KeyEvent {
 /// The running hotkey watcher's settings, shared with its thread.
 #[derive(Clone, Default)]
 pub struct HotkeyWatch {
-    key: Arc<Mutex<Hotkey>>,
+    key: Arc<Mutex<Shortcut>>,
     capture: Arc<AtomicBool>,
     system_key: Arc<Mutex<Option<String>>>,
 }
@@ -129,16 +132,16 @@ impl HotkeyWatch {
         *self.system_key.lock().unwrap_or_else(|e| e.into_inner()) = label;
     }
 
-    pub fn key(&self) -> Hotkey {
-        *self.key.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn key(&self) -> Shortcut {
+        self.key.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    pub fn set_key(&self, key: Hotkey) {
+    pub fn set_key(&self, key: Shortcut) {
         *self.key.lock().unwrap_or_else(|e| e.into_inner()) = key;
     }
 
-    /// The next key pressed is reported as `Captured` instead of being
-    /// compared with the hotkey.
+    /// The next keys pressed are reported as `Captured` instead of being
+    /// compared with the hotkey: all of them, once the first is let go of.
     pub fn capture_next(&self, on: bool) {
         self.capture.store(on, Ordering::Relaxed);
     }
@@ -151,7 +154,7 @@ impl HotkeyWatch {
 /// Starts watching for `key` system-wide, on a thread of its own, and calls
 /// `on_event` there. Fails when the system does not allow it (on macOS,
 /// without Input Monitoring), with what to do about it.
-pub fn watch_hotkey(key: Hotkey, on_event: impl Fn(KeyEvent) + Send + 'static) -> Result<HotkeyWatch> {
+pub fn watch_hotkey(key: Shortcut, on_event: impl Fn(KeyEvent) + Send + 'static) -> Result<HotkeyWatch> {
     let watch = HotkeyWatch::default();
     watch.set_key(key);
     imp::start_hotkey(watch.clone(), Box::new(on_event))?;
@@ -370,9 +373,9 @@ mod tests {
     fn hotkey_watch_shares_its_settings() {
         let watch = HotkeyWatch::default();
         let thread_side = watch.clone();
-        watch.set_key(Hotkey::F(13));
+        watch.set_key(Hotkey::F(13).into());
         watch.capture_next(true);
-        assert_eq!(thread_side.key(), Hotkey::F(13));
+        assert_eq!(thread_side.key(), Shortcut::from(Hotkey::F(13)));
         assert!(thread_side.capturing());
         assert_eq!(watch.system_key(), None);
         thread_side.set_system_key(Some("Ctrl+Alt+D".into()));

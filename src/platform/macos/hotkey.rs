@@ -2,7 +2,7 @@
 //! its own, with its own run loop. It only reads key events (it never
 //! changes or swallows them), which needs Input Monitoring permission.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -15,13 +15,12 @@ use core_graphics::event::{
 use crossbeam_channel::Sender;
 
 use super::super::{HotkeyWatch, KeyEvent};
-use crate::dictation::hotkey::Hotkey;
 use crate::dictation::hotkey::mac::{self, KeyEventKind};
+use crate::dictation::hotkey::{Outcome, Shortcut, Tracker};
 
 pub const HOTKEY_HINT: &str = "Allow Meeting Transcriber in System Settings > Privacy & Security > Input Monitoring, \
      then press Try again (or reopen the app).";
 
-const ESCAPE: u32 = 53;
 /// `kCGEventSourceStateHIDSystemState`: the keyboard as it is now.
 const HID_SYSTEM_STATE: i32 = 1;
 
@@ -33,12 +32,13 @@ unsafe extern "C" {
     fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
 }
 
-/// Whether `key` is down right now, asked of the keyboard rather than
+/// Whether `key` is held right now, asked of the keyboard rather than
 /// learnt from events, so a release the tap missed still shows.
-pub fn hotkey_held(key: Hotkey) -> Option<bool> {
-    let code = u16::try_from(mac::keycode(key)).ok()?;
-    // SAFETY: a plain query; any key code is accepted.
-    Some(unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, code) })
+pub fn hotkey_held(key: &Shortcut) -> Option<bool> {
+    Some(key.held_now(&mac::CODES, |code| {
+        // SAFETY: a plain query; any key code is accepted.
+        u16::try_from(code).is_ok_and(|code| unsafe { CGEventSourceKeyState(HID_SYSTEM_STATE, code) })
+    }))
 }
 
 pub(in crate::platform) fn start_hotkey(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>) -> Result<()> {
@@ -67,6 +67,7 @@ fn run_tap(watch: &HotkeyWatch, on_event: &dyn Fn(KeyEvent), ready: &Sender<Resu
     // whose callback is slow, and tells it so with one last event.
     let port: Rc<Cell<CFMachPortRef>> = Rc::new(Cell::new(std::ptr::null_mut()));
     let tap_port = port.clone();
+    let tracker = RefCell::new(Tracker::default());
     let tap = CGEventTap::new(
         CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
@@ -93,23 +94,22 @@ fn run_tap(watch: &HotkeyWatch, on_event: &dyn Fn(KeyEvent), ready: &Sender<Resu
             };
             let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u32;
             let flags = event.get_flags().bits();
-            let repeat = event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0;
-            if watch.capturing() {
-                if mac::transition(code, kind, code, flags, repeat) == Some(true) {
+            let down = mac::key_change(kind, code, flags)?;
+            // Repeats are told apart by the tracker: the key is already down.
+            let outcome = tracker
+                .borrow_mut()
+                .key(&mac::CODES, &watch.key(), watch.capturing(), code, down);
+            match outcome {
+                Some(Outcome::Down) => on_event(KeyEvent::Down),
+                Some(Outcome::Up) => on_event(KeyEvent::Up),
+                Some(Outcome::Captured(shortcut)) => {
                     watch.capture_next(false);
-                    on_event(if code == ESCAPE {
-                        KeyEvent::CaptureCancelled
-                    } else {
-                        KeyEvent::Captured(mac::from_keycode(code))
-                    });
+                    on_event(KeyEvent::Captured(shortcut));
                 }
-                return None;
-            }
-            // Passed on as they come: dictation ignores a second Down or
-            // a stray Up, and a press after a missed release still counts.
-            match mac::transition(mac::keycode(watch.key()), kind, code, flags, repeat) {
-                Some(true) => on_event(KeyEvent::Down),
-                Some(false) => on_event(KeyEvent::Up),
+                Some(Outcome::CaptureCancelled) => {
+                    watch.capture_next(false);
+                    on_event(KeyEvent::CaptureCancelled);
+                }
                 None => {}
             }
             None

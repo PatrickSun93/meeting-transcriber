@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::dictation::DictationConfig;
+#[cfg(test)]
 use crate::dictation::hotkey::Hotkey;
+use crate::dictation::hotkey::Shortcut;
 use crate::dictation::ollama::{self, OllamaConfig};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +32,8 @@ pub struct Settings {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictationSettings {
     pub enabled: bool,
-    /// A `Hotkey` name, e.g. `right_alt` or `vk:105`.
+    /// A `Shortcut` name: one key (`right_alt`, `vk:105`) or a combination
+    /// (`ctrl+shift+vk:68`).
     pub hotkey: String,
     /// Empty for auto-detect.
     pub language: String,
@@ -53,7 +56,7 @@ impl Default for DictationSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            hotkey: Hotkey::default().name(),
+            hotkey: Shortcut::default().name(),
             language: String::new(),
             initial_prompt: String::new(),
             auto_paste: true,
@@ -94,8 +97,8 @@ impl DictationSettings {
         }
     }
 
-    pub fn hotkey(&self) -> Hotkey {
-        Hotkey::parse(&self.hotkey).unwrap_or_default()
+    pub fn hotkey(&self) -> Shortcut {
+        Shortcut::parse(&self.hotkey).unwrap_or_default()
     }
 
     pub fn recordings_dir_path(&self) -> PathBuf {
@@ -316,7 +319,7 @@ mod tests {
         assert_eq!(old.models_move_from_path(), None);
         // …and before dictation: voice2cursor's defaults.
         assert_eq!(old.dictation, DictationSettings::default());
-        assert_eq!(old.dictation.hotkey(), Hotkey::default());
+        assert_eq!(old.dictation.hotkey(), Shortcut::default());
         let cfg = old.dictation.config();
         assert_eq!((cfg.min_seconds, cfg.max_seconds), (0.35, 300.0));
         assert!(cfg.enabled && cfg.auto_paste && cfg.sounds && cfg.save_recordings);
@@ -329,13 +332,20 @@ mod tests {
         let s = Settings::parse(
             "dictation_hotkey=alt_r\ndictation_min_seconds=abc\ndictation_max_seconds=NaN\nollama=true",
         );
-        assert_eq!(s.dictation.hotkey(), Hotkey::RightAlt);
+        assert_eq!(s.dictation.hotkey(), Shortcut::from(Hotkey::RightAlt));
         assert_eq!(s.dictation.min_seconds, 0.35);
         assert_eq!(s.dictation.max_seconds, 300.0);
         assert!(s.dictation.config().ollama.is_some());
         assert_eq!(
             Settings::parse("dictation_hotkey=nonsense").dictation.hotkey(),
-            Hotkey::default()
+            Shortcut::default()
+        );
+        assert_eq!(
+            Settings::parse("dictation_hotkey=ctrl+shift+vk:68")
+                .dictation
+                .hotkey()
+                .name(),
+            "ctrl+shift+vk:68"
         );
         let mut multi = Settings::default();
         multi.dictation.initial_prompt = "first line\nsecond=line\r\n".into();

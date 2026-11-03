@@ -7,7 +7,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 use super::sidebar::list_row;
 use super::{App, Folder, LANGUAGES, Page, language_name, platform, theme};
 use crate::dictation::archive::Clip;
-use crate::dictation::hotkey::{self, Hotkey};
+use crate::dictation::hotkey::{self, Hotkey, Shortcut};
 use crate::dictation::{Phase, voice2cursor};
 use crate::meetings;
 use crate::platform::HotkeyWatch;
@@ -372,15 +372,17 @@ impl App {
         let current = self.dict.settings.hotkey();
         ui.horizontal(|ui| {
             ui.label("Hotkey");
-            let mut choice = current;
+            let mut choice = current.clone();
             egui::ComboBox::from_id_salt("dictation_hotkey")
                 .selected_text(current.label())
                 .show_ui(ui, |ui| {
                     for key in hotkey::PRESETS {
-                        ui.selectable_value(&mut choice, *key, key.label());
+                        let preset = Shortcut::from(*key);
+                        let label = preset.label();
+                        ui.selectable_value(&mut choice, preset, label);
                     }
-                    if !hotkey::PRESETS.contains(&current) {
-                        ui.selectable_value(&mut choice, current, current.label());
+                    if current.single().is_none_or(|key| !hotkey::PRESETS.contains(&key)) {
+                        ui.selectable_value(&mut choice, current.clone(), current.label());
                     }
                 });
             if choice != current {
@@ -389,7 +391,7 @@ impl App {
             let capturing = self.capturing_hotkey();
             if capturing {
                 ui.spinner();
-                ui.label("Press the key to use… (Esc cancels)");
+                ui.label("Hold the key or keys to use, then let go… (Esc cancels)");
                 if ui.button("Cancel").clicked()
                     && let Some(watch) = &self.dict.hotkey
                 {
@@ -397,7 +399,8 @@ impl App {
                 }
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
             } else if ui
-                .add_enabled(self.dict.hotkey.is_some(), egui::Button::new("Press a key…"))
+                .add_enabled(self.dict.hotkey.is_some(), egui::Button::new("Record keys…"))
+                .on_hover_text("Hold any key or combination, e.g. Ctrl+Shift+D or F13, then let go.")
                 .on_disabled_hover_text("The hotkey can't be watched; see the message at the top.")
                 .clicked()
                 && let Some(watch) = &self.dict.hotkey
@@ -405,8 +408,16 @@ impl App {
                 watch.capture_next(true);
             }
         });
-        if matches!(current, Hotkey::Vk(_)) {
+        if current.keys.iter().any(|k| matches!(k, Hotkey::Vk(_))) {
             ui.weak(format!("Saved as {}.", current.name()));
+        }
+        // Only Windows keeps a combination's keys from the app in front.
+        let types = current
+            .keys
+            .iter()
+            .any(|k| matches!(k, Hotkey::Vk(_)) && !k.is_modifier());
+        if types && !cfg!(windows) {
+            ui.weak("This key still reaches the app in front while held; F13–F20 or modifiers type nothing.");
         }
     }
 }

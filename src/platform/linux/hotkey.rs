@@ -1,7 +1,8 @@
 //! The dictation hotkey on Linux, from whichever source works here:
 //!
 //! - X11: XInput 2 raw key events, seen whichever window has the focus. The
-//!   key itself, held and let go, like on the Mac.
+//!   keys themselves (one, or a combination), held and let go, like on the
+//!   Mac.
 //! - Wayland: the desktop's global shortcuts portal. Apps may not watch the
 //!   keyboard there, so the desktop asks which key to use; it reports the
 //!   shortcut pressed (`Activated`) and released (`Deactivated`).
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context as _, Result, bail};
 use x11rb::connection::Connection as _;
 use x11rb::protocol::Event;
-use x11rb::protocol::xinput::{self, ConnectionExt as _, KeyEventFlags, XIEventMask};
+use x11rb::protocol::xinput::{self, ConnectionExt as _, XIEventMask};
 use x11rb::protocol::xproto::ConnectionExt as _;
 use x11rb::rust_connection::RustConnection;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -23,7 +24,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 use super::super::shared::{KeySource, key_sources, portal_request_path, portal_trigger};
 use super::super::{HotkeyWatch, KeyEvent};
 use super::{socket, system};
-use crate::dictation::hotkey::{Hotkey, x11};
+use crate::dictation::hotkey::{Outcome, Shortcut, Tracker, x11};
 
 /// Shown when neither a hotkey nor the `dictate` socket works; the socket
 /// fails when another copy of the app holds it.
@@ -58,10 +59,10 @@ impl Events {
     }
 }
 
-/// Whether `key` is down right now, asked of the X server rather than
+/// Whether `key` is held right now, asked of the X server rather than
 /// learnt from events, so a release that was missed still shows. None
 /// on Wayland, where nobody may ask.
-pub fn hotkey_held(key: Hotkey) -> Option<bool> {
+pub fn hotkey_held(key: &Shortcut) -> Option<bool> {
     static CONNECTION: Mutex<Option<RustConnection>> = Mutex::new(None);
     if !X11_KEYS.load(Ordering::Relaxed) {
         return None;
@@ -72,7 +73,7 @@ pub fn hotkey_held(key: Hotkey) -> Option<bool> {
     }
     let keymap = connection.as_ref()?.query_keymap().ok().and_then(|c| c.reply().ok());
     match keymap {
-        Some(reply) => Some(x11::is_down(&reply.keys, x11::keycode(key))),
+        Some(reply) => Some(key.held_now(&x11::CODES, |code| x11::is_down(&reply.keys, code))),
         None => {
             // Try a new connection next time.
             *connection = None;
@@ -161,29 +162,31 @@ fn lost_hotkey(watch: &HotkeyWatch, events: &Events, listening: bool) {
 }
 
 fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
+    let mut tracker = Tracker::default();
     loop {
-        let (code, down, repeat) = match conn.wait_for_event() {
-            Ok(Event::XinputRawKeyPress(e)) => (e.detail, true, e.flags.contains(KeyEventFlags::KEY_REPEAT)),
-            Ok(Event::XinputRawKeyRelease(e)) => (e.detail, false, false),
+        let (code, down) = match conn.wait_for_event() {
+            Ok(Event::XinputRawKeyPress(e)) => (e.detail, true),
+            Ok(Event::XinputRawKeyRelease(e)) => (e.detail, false),
             Ok(_) => continue,
             Err(e) => {
                 eprintln!("dictation: lost the X11 display: {e}");
                 return;
             }
         };
-        if watch.capturing() {
-            if down && !repeat {
+        // Repeats are told apart by the tracker: the key is already down.
+        let capturing = watch.capturing();
+        match tracker.key(&x11::CODES, &watch.key(), capturing, code, down) {
+            Some(Outcome::Down) => events.send(KeyEvent::Down),
+            Some(Outcome::Up) => events.send(KeyEvent::Up),
+            Some(Outcome::Captured(shortcut)) => {
                 watch.capture_next(false);
-                events.send(if code == x11::ESCAPE {
-                    KeyEvent::CaptureCancelled
-                } else {
-                    KeyEvent::Captured(x11::from_keycode(code))
-                });
+                events.send(KeyEvent::Captured(shortcut));
             }
-            continue;
-        }
-        if code == x11::keycode(watch.key()) && !repeat {
-            events.send(if down { KeyEvent::Down } else { KeyEvent::Up });
+            Some(Outcome::CaptureCancelled) => {
+                watch.capture_next(false);
+                events.send(KeyEvent::CaptureCancelled);
+            }
+            None => {}
         }
     }
 }
@@ -230,7 +233,7 @@ fn run_portal(watch: &HotkeyWatch, events: &Events, held: &mut bool) -> Result<(
     let signals = portal.receive_all_signals()?;
     let mut shortcut: HashMap<&str, Value> = HashMap::new();
     shortcut.insert("description", Value::from("Dictate: hold to talk"));
-    if let Some(trigger) = portal_trigger(watch.key()) {
+    if let Some(trigger) = portal_trigger(&watch.key()) {
         shortcut.insert("preferred_trigger", Value::from(trigger));
     }
     let bound = portal_call(&conn, "BindShortcuts", "mt_bind", |options| {

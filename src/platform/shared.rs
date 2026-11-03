@@ -363,13 +363,29 @@ pub fn portal_request_path(unique_name: &str, token: &str) -> String {
 }
 
 #[cfg(any(not(any(target_os = "macos", windows)), test))]
-/// The key suggested to the portal for the shortcut. Shortcuts there are
-/// key combinations, so a lone modifier has nothing to suggest.
-pub fn portal_trigger(key: crate::dictation::hotkey::Hotkey) -> Option<String> {
-    match key {
-        crate::dictation::hotkey::Hotkey::F(n) => Some(format!("F{n}")),
-        _ => None,
-    }
+/// The keys suggested to the portal for the shortcut, as the shortcuts
+/// spec writes them (`CTRL+SHIFT+d`). Shortcuts there are modifiers and
+/// one key, so a lone modifier, or several plain keys, have nothing to
+/// suggest.
+pub fn portal_trigger(shortcut: &crate::dictation::hotkey::Shortcut) -> Option<String> {
+    use crate::dictation::hotkey::{Hotkey, Mods, x11};
+    let key = match shortcut.keys.as_slice() {
+        [Hotkey::F(n)] => format!("F{n}"),
+        [Hotkey::Vk(code)] => match x11::name(*code)?.as_str() {
+            "Space" => "space".into(),
+            name if name.len() == 1 => name.to_ascii_lowercase(),
+            name if name.starts_with('F') && name[1..].parse::<u8>().is_ok() => name.into(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mods = shortcut.mods.each().map(|m| match m {
+        Mods::CTRL => "CTRL",
+        Mods::ALT => "ALT",
+        Mods::SHIFT => "SHIFT",
+        _ => "LOGO",
+    });
+    Some(mods.chain([key.as_str()]).collect::<Vec<_>>().join("+"))
 }
 
 #[cfg(any(not(any(target_os = "macos", windows)), test))]
@@ -560,8 +576,16 @@ mod tests {
             portal_request_path(":1.234", "mt_bind"),
             "/org/freedesktop/portal/desktop/request/1_234/mt_bind"
         );
-        assert_eq!(portal_trigger(Hotkey::F(13)), Some("F13".into()));
-        assert_eq!(portal_trigger(Hotkey::RightCtrl), None);
+        use crate::dictation::hotkey::Shortcut;
+        assert_eq!(portal_trigger(&Hotkey::F(13).into()), Some("F13".into()));
+        assert_eq!(portal_trigger(&Hotkey::RightCtrl.into()), None);
+        let combo = Shortcut::parse("ctrl+shift+vk:40").unwrap();
+        assert_eq!(portal_trigger(&combo), Some("CTRL+SHIFT+d".into()));
+        assert_eq!(
+            portal_trigger(&Shortcut::parse("super+vk:65").unwrap()),
+            Some("LOGO+space".into())
+        );
+        assert_eq!(portal_trigger(&Shortcut::parse("f13+f14").unwrap()), None);
         assert_eq!(sound_name(Sound::Done), "complete");
     }
 }
