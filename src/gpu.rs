@@ -171,6 +171,7 @@ fn failures(dir: &Path) -> Vec<Backend> {
     parse_failures(&text, |b| stamp(&build_exe(dir, b)))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn note_failure(dir: &Path, backend: Backend) {
     let mut text = std::fs::read_to_string(failed_path()).unwrap_or_default();
     if let Some(stamp) = stamp(&build_exe(dir, backend)) {
@@ -449,13 +450,13 @@ pub fn crashed(code: Option<i32>, signal: Option<i32>) -> bool {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn status_signal(status: &std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt as _;
     status.signal()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn status_signal(_status: &std::process::ExitStatus) -> Option<i32> {
     None
 }
