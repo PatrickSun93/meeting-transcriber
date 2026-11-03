@@ -207,6 +207,16 @@ impl JobQueue {
     pub fn is_empty(&self) -> bool {
         self.dictations.is_empty() && self.finals.is_empty() && self.partials.iter().all(Option::is_none)
     }
+
+    /// Finished utterances waiting, and their seconds of audio.
+    pub fn finals_waiting(&self) -> (usize, f32) {
+        let seconds = self
+            .finals
+            .iter()
+            .map(|j| j.chunk.samples.len() as f32 / SAMPLE_RATE as f32)
+            .sum();
+        (self.finals.len(), seconds)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,9 +242,23 @@ pub enum Output {
         seconds: f32,
     },
     Error(String),
+    /// What the worker has to do: sent as it starts on a piece of a
+    /// meeting, and with `busy` false when it runs out of work.
+    Progress(Progress),
     /// A dictation's text as Whisper wrote it, or why it failed. Sent on
     /// the job's own `reply` channel.
     Dictation(Result<Recognized, String>),
+}
+
+/// How much meeting audio is waiting to be transcribed.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Progress {
+    /// Whether the worker is transcribing a piece of a meeting.
+    pub busy: bool,
+    /// Finished utterances still to transcribe, the current one included.
+    pub waiting: usize,
+    /// …and their seconds of audio.
+    pub waiting_seconds: f32,
 }
 
 /// Starts the worker: it loads the engine, sends `Ready` (or `LoadFailed`),
@@ -262,8 +286,13 @@ pub fn spawn_worker(
                 }
             };
             let mut queue = JobQueue::default();
+            let mut busy = false;
             loop {
                 if queue.is_empty() {
+                    if std::mem::take(&mut busy) {
+                        let _ = outputs.send(Output::Progress(Progress::default()));
+                        notify();
+                    }
                     match jobs.recv() {
                         Ok(job) => queue.push(job),
                         Err(_) => break,
@@ -283,6 +312,18 @@ pub fn spawn_worker(
                     }
                     None => continue,
                 };
+                let (mut waiting, mut waiting_seconds) = queue.finals_waiting();
+                if job.chunk.kind == ChunkKind::Final {
+                    waiting += 1;
+                    waiting_seconds += job.chunk.samples.len() as f32 / SAMPLE_RATE as f32;
+                }
+                busy = true;
+                let _ = outputs.send(Output::Progress(Progress {
+                    busy,
+                    waiting,
+                    waiting_seconds,
+                }));
+                notify();
                 let output = run_job(engine.as_mut(), job, &outputs);
                 if outputs.send(output).is_err() {
                     break;
@@ -462,8 +503,18 @@ mod tests {
         handle.join().unwrap();
         let outputs: Vec<_> = out_rx.iter().collect();
         assert_eq!(outputs[0], Output::Ready);
-        assert!(matches!(outputs[1], Output::Speed { .. }));
-        match &outputs[2] {
+        // Progress as it starts, and once it runs out of work.
+        assert_eq!(
+            outputs[1],
+            Output::Progress(Progress {
+                busy: true,
+                waiting: 1,
+                waiting_seconds: 1.0
+            })
+        );
+        assert_eq!(outputs.last(), Some(&Output::Progress(Progress::default())));
+        assert!(matches!(outputs[2], Output::Speed { .. }));
+        match &outputs[3] {
             Output::Final { line: Some(line), .. } => {
                 assert_eq!(line.text, "16000 samples");
                 assert_eq!(line.speaker, Speaker::Others);

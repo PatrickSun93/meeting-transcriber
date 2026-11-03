@@ -151,8 +151,28 @@ impl App {
         } else if !self.engine_ready() {
             ui.spinner();
             theme::pill(ui, "Loading model…", theme::accent(ui));
+        } else if let Some((waiting, seconds)) = self.transcribing().filter(|(n, _)| *n > 0) {
+            // Stopped, but Whisper is still at it: lines are still to come.
+            ui.spinner();
+            theme::pill(ui, &transcribing_label(waiting, seconds), theme::accent(ui)).on_hover_text(
+                "Whisper is still writing down what was recorded. Lines appear as each piece is done; \
+                 nothing is lost if you start another meeting.",
+            );
         } else {
             theme::pill(ui, "●  Ready", theme::READY_GREEN);
+        }
+        if self.recording()
+            && let Some((waiting, seconds)) = self.transcribing()
+            && seconds >= BEHIND_AFTER
+        {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("Whisper is {} behind ({waiting} left)", short_duration(seconds)),
+            )
+            .on_hover_text(
+                "Whisper is slower than the meeting on this computer: lines come late, and keep coming after \
+                 you stop. A smaller model (Settings) or a graphics card keeps up.",
+            );
         }
         let m = &self.open.meeting;
         if !self.recording() && self.open.path.is_some() {
@@ -354,5 +374,49 @@ impl App {
             ui.spinner();
             ui.weak("Choosing a folder…");
         }
+    }
+}
+
+/// How far behind Whisper may fall while recording before the page says so.
+const BEHIND_AFTER: f32 = 8.0;
+
+/// "40 s", "3 min".
+fn short_duration(seconds: f32) -> String {
+    if seconds < 90.0 {
+        format!("{:.0} s", seconds)
+    } else {
+        format!("{:.0} min", seconds / 60.0)
+    }
+}
+
+/// The status chip while Whisper finishes after recording stopped.
+fn transcribing_label(waiting: usize, seconds: f32) -> String {
+    let pieces = if waiting == 1 {
+        "1 piece".to_string()
+    } else {
+        format!("{waiting} pieces")
+    };
+    if seconds >= 1.0 {
+        format!("Transcribing…  {pieces} left ({} of audio)", short_duration(seconds))
+    } else {
+        format!("Transcribing…  {pieces} left")
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::transcribing_label;
+
+    #[test]
+    fn transcribing_labels() {
+        assert_eq!(transcribing_label(1, 0.0), "Transcribing…  1 piece left");
+        assert_eq!(
+            transcribing_label(3, 75.0),
+            "Transcribing…  3 pieces left (75 s of audio)"
+        );
+        assert_eq!(
+            transcribing_label(9, 600.0),
+            "Transcribing…  9 pieces left (10 min of audio)"
+        );
     }
 }

@@ -24,7 +24,7 @@ use crate::models::{self, DEFAULT_MODEL, ModelInfo};
 use crate::platform;
 use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
-use crate::transcriber::{Job, Output, SpeechToText, WhisperEngine, spawn_worker};
+use crate::transcriber::{Job, Output, Progress, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
 use dictation::DictationState;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
@@ -93,6 +93,8 @@ struct Engine {
     jobs: Sender<Job>,
     outputs: Receiver<Output>,
     ready: bool,
+    /// What the worker last said it has to do.
+    progress: Progress,
 }
 
 struct Download {
@@ -253,6 +255,15 @@ impl App {
     }
 
     /// Loads the selected model in the background if it is downloaded.
+    /// Meeting audio waiting for Whisper: pieces (counting those not yet
+    /// picked up) and seconds of audio. None when it has nothing to do.
+    fn transcribing(&self) -> Option<(usize, f32)> {
+        let engine = self.engine.as_ref()?;
+        let p = engine.progress;
+        let queued = engine.jobs.len();
+        (p.busy || queued > 0).then_some((p.waiting + queued, p.waiting_seconds))
+    }
+
     fn ensure_engine(&mut self) {
         if self.engine.as_ref().is_some_and(|e| e.model == self.model) || !self.model.is_downloaded() {
             return;
@@ -274,6 +285,7 @@ impl App {
             jobs: job_tx,
             outputs: out_rx,
             ready: false,
+            progress: Progress::default(),
         });
     }
 
@@ -595,6 +607,11 @@ impl App {
                         engine.ready = true;
                     }
                 }
+                Output::Progress(progress) => {
+                    if let Some(engine) = &mut self.engine {
+                        engine.progress = progress;
+                    }
+                }
                 Output::LoadFailed(e) => {
                     let label = self.engine.as_ref().map_or("the model", |e| e.model.label);
                     let message = format!("Could not load {label}: {e}");
@@ -666,7 +683,7 @@ impl App {
             }
             Output::Error(e) => self.errors.push(e),
             // Only meaningful for the current engine; see poll_engine.
-            Output::Ready | Output::LoadFailed(_) => {}
+            Output::Ready | Output::LoadFailed(_) | Output::Progress(_) => {}
             // Goes to the dictation thread, never here.
             Output::Dictation(_) => {}
         }
