@@ -7,8 +7,9 @@
 #   .\scripts\package-windows.ps1 -Vulkan -Cuda    # plus a CUDA build in cuda\ (-NVIDIA.zip)
 #
 # The program starts the best graphics-card build beside it that can run
-# here (src/gpu.rs). -Vulkan needs the Vulkan SDK; -Cuda the CUDA toolkit
-# (CUDA_PATH), whose runtime DLLs are copied in.
+# here (src/gpu.rs). -Vulkan needs the Vulkan SDK, Ninja, and a Developer
+# PowerShell for Visual Studio; -Cuda the CUDA toolkit (CUDA_PATH), whose
+# runtime DLLs are copied in.
 param([switch]$Vulkan, [switch]$Cuda)
 $ErrorActionPreference = 'Stop'
 
@@ -33,8 +34,18 @@ Copy-Item (Join-Path $target 'release\meeting-transcriber.exe') $stage
 # A graphics-card build in its own folder, built in its own target folder.
 function Add-GpuBuild([string]$feature) {
     $dir = Join-Path $target $feature
+    # whisper.cpp's Vulkan build runs a CMake project of its own to make its
+    # shaders, which under the Visual Studio generator finds no compiler.
+    # Ninja, from a developer shell (cl.exe on the PATH), lets it find one.
+    $generator = $env:CMAKE_GENERATOR
+    if ($feature -eq 'vulkan' -and (Get-Command ninja -ErrorAction SilentlyContinue) -and
+        (Get-Command cl -ErrorAction SilentlyContinue)) {
+        $env:CMAKE_GENERATOR = 'Ninja'
+    }
     cargo build --release --features $feature --target-dir $dir
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $code = $LASTEXITCODE
+    $env:CMAKE_GENERATOR = $generator
+    if ($code -ne 0) { exit $code }
     $sub = Join-Path $stage $feature
     New-Item -ItemType Directory -Force -Path $sub | Out-Null
     Copy-Item (Join-Path $dir 'release\meeting-transcriber.exe') $sub

@@ -102,6 +102,10 @@ jobs:
           Start-Process -Wait -FilePath .\vulkan-sdk.exe -ArgumentList '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
           "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "C:\VulkanSDK\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      # The Vulkan build needs Ninja and cl.exe on the PATH (see the script).
+      - run: if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) { pip install ninja }
+        shell: pwsh
+      - uses: ilammy/msvc-dev-cmd@v1
       - run: ./scripts/package-windows.ps1 -Vulkan
         shell: pwsh
       - uses: actions/upload-artifact@v4
