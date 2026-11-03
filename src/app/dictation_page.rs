@@ -16,7 +16,7 @@ use crate::platform::HotkeyWatch;
 pub(super) const LIST_STEP: usize = 200;
 
 /// A tinted banner with a message and buttons.
-fn banner(ui: &mut Ui, color: Color32, text: &str, buttons: impl FnOnce(&mut Ui)) {
+pub(super) fn banner(ui: &mut Ui, color: Color32, text: &str, buttons: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(color.gamma_multiply(0.12))
         .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.4)))

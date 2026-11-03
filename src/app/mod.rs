@@ -175,6 +175,13 @@ pub struct App {
     model_move: Option<ModelMove>,
     sidebar_tab: SidebarTab,
     dict: DictationState,
+    /// Offering to install (Windows, when run from wherever it was unzipped).
+    install_offer: bool,
+}
+
+/// Marks that the user does not want to be asked to install.
+fn install_declined_path() -> std::path::PathBuf {
+    models::app_support_dir().join("install-declined")
 }
 
 impl App {
@@ -239,6 +246,7 @@ impl App {
             model_move: None,
             sidebar_tab: SidebarTab::Meetings,
             dict,
+            install_offer: !platform::installed() && !install_declined_path().is_file(),
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -737,6 +745,59 @@ impl App {
         }
     }
 
+    /// Offers to install a copy run from where it was unzipped, so it can
+    /// be found again in the Start menu.
+    fn install_banner(&mut self, ui: &mut egui::Ui) {
+        if !self.install_offer {
+            return;
+        }
+        let from_temp = platform::running_from_temp();
+        let text = if from_temp {
+            "Meeting Transcriber is running from inside the zip, from a temporary folder Windows empties. \
+             Install it to keep it, with a shortcut in the Start menu and on the desktop."
+                .to_string()
+        } else {
+            format!(
+                "Meeting Transcriber is not installed. Install it to {} with a shortcut in the Start menu and on \
+                 the desktop, so it is easy to find again.",
+                platform::install_dir().display()
+            )
+        };
+        let mut install = false;
+        let mut later = false;
+        let mut never = false;
+        let recording = self.recording();
+        dictation_page::banner(ui, theme::accent(ui), &text, |ui| {
+            install = ui
+                .add_enabled(!recording, egui::Button::new("Install"))
+                .on_disabled_hover_text("Stop recording first: the installed copy opens in its place.")
+                .clicked();
+            later = ui.small_button("Not now").clicked();
+            never = !from_temp && ui.small_button("Don't ask again").clicked();
+        });
+        if later {
+            self.install_offer = false;
+        }
+        if never {
+            self.install_offer = false;
+            let _ = std::fs::write(install_declined_path(), b"");
+        }
+        if install {
+            self.install_offer = false;
+            match platform::install(true).and_then(|exe| {
+                // The installed copy takes over: this one quits first, so
+                // the two don't both dictate.
+                self.stop_session();
+                self.finish_pending();
+                self.save_settings_if_changed();
+                platform::open_installed(&exe)
+            }) {
+                Ok(()) => std::process::exit(0),
+                Err(e) => self.errors.push(format!("Could not install: {e:#}")),
+            }
+        }
+    }
+
     fn error_banner(&mut self, ui: &mut egui::Ui) {
         let mut dismiss = None;
         for (i, e) in self.errors.iter().enumerate() {
@@ -794,6 +855,7 @@ impl eframe::App for App {
             .frame(theme::content_frame(ui))
             .show(ui, |ui| {
                 self.error_banner(ui);
+                self.install_banner(ui);
                 self.dictation_banners(ui);
                 match self.page {
                     Page::Meeting => self.meeting_page(ui),

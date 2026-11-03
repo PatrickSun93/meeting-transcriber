@@ -24,6 +24,11 @@ Meeting Transcriber
       letting go of the hotkey does. Bind `dictate toggle` to a shortcut
       in your desktop's keyboard settings (on Wayland, or for any key).
 
+  meeting-transcriber install [--no-desktop]          (Windows)
+      Copies the program (and its graphics-card builds) to
+      %LOCALAPPDATA%\\Programs\\Meeting Transcriber and adds shortcuts in
+      the Start menu and on the desktop. uninstall takes them away.
+
   meeting-transcriber doctor [--json]
       Reports what the app sees here: version, settings file, folders,
       models, the hotkey, whether the app is running, permissions, and
@@ -70,6 +75,21 @@ fn main() -> Result<()> {
         Some("--hidden") => run_app(true),
         Some("transcribe") => run_transcribe(&args[1..]),
         Some("dictate") => run_dictate(&args[1..]),
+        Some("install") => {
+            let (set, _) = flags(&args[1..], &["--no-desktop"])?;
+            let exe = meeting_transcriber::platform::install(!set.contains(&"--no-desktop"))?;
+            println!("Installed {}", exe.display());
+            Ok(())
+        }
+        Some("uninstall") => {
+            let dir = meeting_transcriber::platform::uninstall()?;
+            println!(
+                "Removed the shortcuts and the login entry. Delete {} to remove the program; \
+                 your meetings and settings stay.",
+                dir.display()
+            );
+            Ok(())
+        }
         Some("doctor") => {
             let (_, json) = flags(&args[1..], &[])?;
             let report = cli::doctor();

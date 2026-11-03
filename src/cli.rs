@@ -158,6 +158,16 @@ pub fn doctor() -> Report {
         Claim::Taken
     );
     r.fact("app_running", if running { "yes" } else { "no" });
+    if cfg!(windows) {
+        r.fact("installed", if platform::installed() { "yes" } else { "no" });
+        if platform::running_from_temp() {
+            r.problems.push(
+                "The program runs from a temporary folder (opened from inside the zip): unzip it, or run \
+                 `meeting-transcriber install`."
+                    .into(),
+            );
+        }
+    }
 
     // Where Whisper runs.
     for (key, value) in crate::gpu::report() {

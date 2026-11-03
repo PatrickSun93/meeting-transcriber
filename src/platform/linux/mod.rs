@@ -23,6 +23,34 @@ pub use system::{
 };
 pub use tray::Tray;
 
+const INSTALL_HOW: &str = "Run install.sh from the package (or scripts/install-linux.sh from a checkout).";
+
+/// Installing is Windows' (the zip has no installer); here the package's
+/// own way installs it.
+pub fn installed() -> bool {
+    true
+}
+
+pub fn running_from_temp() -> bool {
+    false
+}
+
+pub fn install_dir() -> std::path::PathBuf {
+    std::path::PathBuf::new()
+}
+
+pub fn install(_desktop: bool) -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
+pub fn open_installed(_exe: &std::path::Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+pub fn uninstall() -> anyhow::Result<std::path::PathBuf> {
+    anyhow::bail!("{}", INSTALL_HOW)
+}
+
 /// Where the hotkey can come from in this session, for
 /// `meeting-transcriber doctor`.
 pub fn diagnostics() -> Vec<(&'static str, String)> {

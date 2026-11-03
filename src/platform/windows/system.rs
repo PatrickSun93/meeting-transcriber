@@ -114,20 +114,7 @@ pub fn set_open_at_login(on: bool) -> Result<()> {
         // The program people start, not the graphics-card build it
         // handed over to: that one chooses again at every login.
         let exe = crate::gpu::launcher_exe().context("could not find where the app is")?;
-        let value: Vec<u16> = run_command(&exe).encode_utf16().chain([0]).collect();
-        // SAFETY: `value` is a NUL-terminated UTF-16 string of the given
-        // size in bytes.
-        let status = unsafe {
-            RegSetKeyValueW(
-                HKEY_CURRENT_USER,
-                RUN_KEY,
-                RUN_VALUE,
-                REG_SZ.0,
-                Some(value.as_ptr().cast()),
-                (value.len() * 2) as u32,
-            )
-        };
-        status.ok().context("could not add the app to the startup programs")
+        set_open_at_login_for(&exe)
     } else {
         // SAFETY: plain strings; removing a value that is not there fails
         // harmlessly.
@@ -139,6 +126,24 @@ pub fn set_open_at_login(on: bool) -> Result<()> {
             .ok()
             .context("could not remove the app from the startup programs")
     }
+}
+
+/// Makes `exe` this user's startup entry.
+pub(super) fn set_open_at_login_for(exe: &std::path::Path) -> Result<()> {
+    let value: Vec<u16> = run_command(exe).encode_utf16().chain([0]).collect();
+    // SAFETY: `value` is a NUL-terminated UTF-16 string of the given size
+    // in bytes.
+    let status = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            REG_SZ.0,
+            Some(value.as_ptr().cast()),
+            (value.len() * 2) as u32,
+        )
+    };
+    status.ok().context("could not add the app to the startup programs")
 }
 
 /// The hook needs no permission, so there is no settings page to open.
