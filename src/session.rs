@@ -14,18 +14,87 @@ use crate::chunker::{Chunker, ChunkerConfig};
 use crate::transcriber::{ChunkJob, Job};
 use crate::transcript::Speaker;
 
-/// Live input levels for the meters, stored as f32 bits.
+/// Live input levels for the meters, and per source the loudest level and
+/// seconds of audio heard so far (all stored as f32 bits).
 #[derive(Default)]
-pub struct Levels([AtomicU32; 2]);
+pub struct Levels {
+    current: [AtomicU32; 2],
+    peak: [AtomicU32; 2],
+    heard: [AtomicU32; 2],
+}
+
+fn load(cell: &AtomicU32) -> f32 {
+    f32::from_bits(cell.load(Ordering::Relaxed))
+}
 
 impl Levels {
     pub fn get(&self, speaker: Speaker) -> f32 {
-        f32::from_bits(self.0[speaker.index()].load(Ordering::Relaxed))
+        load(&self.current[speaker.index()])
     }
 
     fn set(&self, speaker: Speaker, value: f32) {
-        self.0[speaker.index()].store(value.to_bits(), Ordering::Relaxed);
+        self.current[speaker.index()].store(value.to_bits(), Ordering::Relaxed);
     }
+
+    /// Takes in a packet's level and length.
+    fn record(&self, speaker: Speaker, level: f32, seconds: f32) {
+        let i = speaker.index();
+        self.set(speaker, level);
+        if level > load(&self.peak[i]) {
+            self.peak[i].store(level.to_bits(), Ordering::Relaxed);
+        }
+        let heard = load(&self.heard[i]) + seconds;
+        self.heard[i].store(heard.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The loudest level heard from `speaker` so far.
+    pub fn peak(&self, speaker: Speaker) -> f32 {
+        load(&self.peak[speaker.index()])
+    }
+
+    /// Seconds of audio received from `speaker` so far.
+    pub fn heard(&self, speaker: Speaker) -> f32 {
+        load(&self.heard[speaker.index()])
+    }
+}
+
+/// How long a source may stay silent before the window says so.
+pub const SILENCE_WARNING_AFTER: f32 = 12.0;
+
+/// What to tell the user about a source `elapsed` seconds into recording,
+/// if it has sent nothing, or nothing loud enough to count as speech: it
+/// is never transcribed, and nothing else would say why.
+pub fn silence_warning(
+    speaker: Speaker,
+    name: &str,
+    heard: f32,
+    peak: f32,
+    threshold: f32,
+    elapsed: f32,
+) -> Option<String> {
+    if elapsed < SILENCE_WARNING_AFTER || peak >= threshold {
+        return None;
+    }
+    let what = match speaker {
+        Speaker::Me => format!("the microphone ({name})"),
+        Speaker::Others => format!("{} ({name})", crate::platform::SYSTEM_AUDIO),
+    };
+    let state = if heard < 1.0 {
+        "No audio has come from"
+    } else {
+        "Only silence has come from"
+    };
+    let fix = match speaker {
+        Speaker::Me => format!(
+            "Nothing it hears is transcribed. Check that it is the microphone you speak into and is not muted ({}). {}.",
+            crate::platform::NO_MIC_HINT,
+            crate::platform::MIC_ACCESS_HINT
+        ),
+        Speaker::Others => "Nothing it hears is transcribed. Only the default output device is recorded: \
+             make the meeting app play through it (or play something to check)."
+            .to_string(),
+    };
+    Some(format!("{state} {what} in {elapsed:.0} seconds. {fix}"))
 }
 
 pub struct SessionConfig {
@@ -52,6 +121,11 @@ pub struct Session {
     /// Sources that failed to start, with the reason.
     pub warnings: Vec<String>,
     pub source_names: Vec<String>,
+    /// Each started source and its name.
+    pub sources: Vec<(Speaker, String)>,
+    /// Whether the sources were checked for silence (`silence_warnings`).
+    silence_checked: bool,
+    speech_threshold: f32,
 }
 
 impl Session {
@@ -62,13 +136,17 @@ impl Session {
         let (audio_tx, audio_rx) = crossbeam_channel::unbounded();
         let mut captures = Vec::new();
         let mut warnings = Vec::new();
+        let mut sources = Vec::new();
         if cfg.capture_me {
             let result = match fake_source(Speaker::Me) {
                 Some(path) => start_file(path, Speaker::Me, audio_tx.clone()),
                 None => start_mic(audio_tx.clone()),
             };
             match result {
-                Ok(c) => captures.push(c),
+                Ok(c) => {
+                    sources.push((Speaker::Me, c.name.clone()));
+                    captures.push(c);
+                }
                 Err(e) => warnings.push(format!("Microphone: {e:#}")),
             }
         }
@@ -78,7 +156,10 @@ impl Session {
                 None => start_system_audio(audio_tx.clone()),
             };
             match result {
-                Ok(c) => captures.push(c),
+                Ok(c) => {
+                    sources.push((Speaker::Others, c.name.clone()));
+                    captures.push(c);
+                }
                 Err(e) => warnings.push(format!("System audio: {e:#}")),
             }
         }
@@ -89,6 +170,7 @@ impl Session {
 
         let levels = Arc::new(Levels::default());
         let started = Instant::now();
+        let threshold = cfg.chunker.speech_threshold;
         let (stop_tx, stop_rx) = crossbeam_channel::bounded(0);
         let router = spawn_router(audio_rx, stop_rx, jobs, cfg, started, levels.clone(), notify);
         Ok(Self {
@@ -99,7 +181,38 @@ impl Session {
             levels,
             started,
             warnings,
+            sources,
+            silence_checked: false,
+            speech_threshold: threshold,
         })
+    }
+
+    /// Once, a while into recording: a warning for each source that has
+    /// been silent so far. Empty before then, and after.
+    pub fn silence_warnings(&mut self) -> Vec<String> {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        if self.silence_checked || elapsed < SILENCE_WARNING_AFTER {
+            return Vec::new();
+        }
+        self.silence_checked = true;
+        let warnings: Vec<String> = self
+            .sources
+            .iter()
+            .filter_map(|(speaker, name)| {
+                silence_warning(
+                    *speaker,
+                    name,
+                    self.levels.heard(*speaker),
+                    self.levels.peak(*speaker),
+                    self.speech_threshold,
+                    elapsed,
+                )
+            })
+            .collect();
+        for w in &warnings {
+            eprintln!("recording: {w}");
+        }
+        warnings
     }
 
     /// Stops capturing. Speech still buffered is sent for transcription.
@@ -128,7 +241,8 @@ fn spawn_router(
         .spawn(move || {
             let mut router = Router::new(&cfg);
             let handle = |packet: AudioPacket, router: &mut Router| {
-                levels.set(packet.speaker, rms(&packet.samples));
+                let seconds = packet.samples.len() as f32 / SAMPLE_RATE as f32;
+                levels.record(packet.speaker, rms(&packet.samples), seconds);
                 let elapsed = started.elapsed().as_secs_f32();
                 for job in router.push(packet, elapsed) {
                     let _ = jobs.send(Job::Chunk(job));
@@ -238,6 +352,27 @@ impl Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn silent_sources_are_reported_once_recording_has_run_a_while() {
+        let warn = |heard, peak, elapsed| silence_warning(Speaker::Me, "Webcam Mic", heard, peak, 0.008, elapsed);
+        assert_eq!(warn(0.0, 0.0, 5.0), None);
+        assert_eq!(warn(20.0, 0.05, 20.0), None);
+        let silent = warn(20.0, 0.001, 20.0).unwrap();
+        assert!(silent.starts_with("Only silence has come from the microphone (Webcam Mic) in 20 seconds."));
+        assert!(warn(0.0, 0.0, 15.0).unwrap().starts_with("No audio has come from"));
+        let others = silence_warning(Speaker::Others, "Speakers", 15.0, 0.0, 0.008, 15.0).unwrap();
+        assert!(others.contains("default output device"));
+        let levels = Levels::default();
+        levels.record(Speaker::Others, 0.02, 0.5);
+        levels.record(Speaker::Others, 0.01, 0.5);
+        assert_eq!(
+            (levels.peak(Speaker::Others), levels.heard(Speaker::Others)),
+            (0.02, 1.0)
+        );
+        assert_eq!(levels.get(Speaker::Others), 0.01);
+        assert_eq!(levels.peak(Speaker::Me), 0.0);
+    }
     use crate::chunker::ChunkKind;
 
     fn cfg() -> SessionConfig {

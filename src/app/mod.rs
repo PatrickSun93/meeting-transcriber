@@ -747,6 +747,12 @@ impl eframe::App for App {
     /// keep being saved and the menu bar item stays current.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if let Some(session) = self.session.as_mut() {
+            let silent = session.silence_warnings();
+            self.errors.extend(silent);
+            // Checked even if no audio comes in to wake the window.
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         self.refresh_library();
         self.autosave();
         self.dictation_logic(ctx);
