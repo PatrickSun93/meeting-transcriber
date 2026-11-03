@@ -233,7 +233,9 @@ pub fn open_at_login() -> bool {
 pub fn set_open_at_login(on: bool) -> Result<()> {
     let path = autostart_path().context("no config folder")?;
     if on {
-        let exe = std::env::current_exe().context("could not find where the app is")?;
+        // The program people start, not the graphics-card build it
+        // handed over to: that one chooses again at every login.
+        let exe = crate::gpu::launcher_exe().context("could not find where the app is")?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
         }

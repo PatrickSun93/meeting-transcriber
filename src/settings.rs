@@ -25,6 +25,9 @@ pub struct Settings {
     /// otherwise. Saved before the move starts, so a move cut short (the
     /// app quit, the Mac slept) is finished on the next launch.
     pub models_move_from: String,
+    /// Run Whisper on the graphics card when there is one (Windows: picks
+    /// the CUDA or Vulkan build next to the program; see `gpu`).
+    pub use_gpu: bool,
     pub dictation: DictationSettings,
 }
 
@@ -135,6 +138,7 @@ impl Default for Settings {
             capture_me: true,
             capture_others: true,
             remove_echo: true,
+            use_gpu: true,
             models_dir: String::new(),
             meetings_dir: String::new(),
             models_move_from: String::new(),
@@ -189,6 +193,7 @@ impl Settings {
                 "models_dir" => s.models_dir = value.to_string(),
                 "meetings_dir" => s.meetings_dir = value.to_string(),
                 "models_move_from" => s.models_move_from = value.to_string(),
+                "use_gpu" => s.use_gpu = flag,
                 key => s.dictation.parse_line(key, value),
             }
         }
@@ -206,7 +211,7 @@ impl Settings {
                 .join(" ")
         };
         format!(
-            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\nmodels_move_from={}\n\
+            "model={}\nlanguage={}\ncapture_me={}\ncapture_others={}\nremove_echo={}\nmodels_dir={}\nmeetings_dir={}\nmodels_move_from={}\nuse_gpu={}\n\
              dictation={}\ndictation_hotkey={}\ndictation_language={}\ndictation_prompt={}\ndictation_auto_paste={}\n\
              dictation_sounds={}\ndictation_save_recordings={}\ndictation_recordings_dir={}\n\
              dictation_min_seconds={}\ndictation_max_seconds={}\n\
@@ -219,6 +224,7 @@ impl Settings {
             self.models_dir,
             self.meetings_dir,
             self.models_move_from,
+            self.use_gpu,
             d.enabled,
             d.hotkey,
             d.language,
@@ -284,6 +290,7 @@ mod tests {
             capture_me: false,
             capture_others: true,
             remove_echo: false,
+            use_gpu: false,
             models_dir: "/Volumes/Big Disk/whisper=models".into(),
             meetings_dir: "~/Notes/Meetings".into(),
             models_move_from: "/Volumes/Old Disk/models".into(),

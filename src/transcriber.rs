@@ -72,6 +72,7 @@ impl WhisperEngine {
             .with_context(|| format!("could not load Whisper model {}", model.display()))?;
         let state = ctx.create_state().context("could not create Whisper state")?;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32;
+        crate::gpu::mark_ready();
         Ok(Self { state, threads })
     }
 }

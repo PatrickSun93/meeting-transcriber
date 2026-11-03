@@ -60,6 +60,11 @@ fn main() -> Result<()> {
     if !args.is_empty() {
         meeting_transcriber::platform::attach_console();
     }
+    // The processor build hands over to a graphics-card build beside it
+    // when there is a card for it (Windows; see `gpu`).
+    if let Some(code) = meeting_transcriber::gpu::hand_off(&args) {
+        std::process::exit(code);
+    }
     match args.first().map(String::as_str) {
         None => run_app(false),
         Some("--hidden") => run_app(true),

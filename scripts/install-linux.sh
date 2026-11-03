@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Installs Meeting Transcriber for the current user on Linux: the program in
-# ~/.local/bin, a launcher in the app menu and its icon.
+# ~/.local/bin (with its graphics-card builds, if the package has them, in
+# ~/.local/lib/meeting-transcriber), a launcher in the app menu and its icon.
 #
 # From a checkout it builds first; extra arguments go to `cargo build --release`:
 #   ./scripts/install-linux.sh                     # Whisper on the processor
@@ -26,7 +27,23 @@ data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 apps_dir="$data_dir/applications"
 icons_dir="$data_dir/icons/hicolor/scalable/apps"
 mkdir -p "$bin_dir" "$apps_dir" "$icons_dir"
-install -m 755 "$program" "$bin_dir/meeting-transcriber"
+lib_dir="$HOME/.local/lib/meeting-transcriber"
+if [[ -d "$assets/vulkan" || -d "$assets/cuda" ]]; then
+    # The graphics-card builds must sit beside the program, which finds
+    # them from where it really is: it lives in ~/.local/lib with them, and
+    # ~/.local/bin links to it.
+    rm -rf "$lib_dir"
+    mkdir -p "$lib_dir"
+    install -m 755 "$program" "$lib_dir/meeting-transcriber"
+    for gpu in vulkan cuda; do
+        if [[ -d "$assets/$gpu" ]]; then cp -R "$assets/$gpu" "$lib_dir/"; fi
+    done
+    rm -f "$bin_dir/meeting-transcriber"
+    ln -s "$lib_dir/meeting-transcriber" "$bin_dir/meeting-transcriber"
+else
+    rm -f "$bin_dir/meeting-transcriber"
+    install -m 755 "$program" "$bin_dir/meeting-transcriber"
+fi
 install -m 644 "$assets/meeting-transcriber.svg" "$icons_dir/meeting-transcriber.svg"
 # The full path, since ~/.local/bin is not on every desktop session's PATH.
 sed "s|^Exec=.*|Exec=\"$bin_dir/meeting-transcriber\"|" "$assets/meeting-transcriber.desktop" \

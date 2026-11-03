@@ -159,6 +159,11 @@ pub fn doctor() -> Report {
     );
     r.fact("app_running", if running { "yes" } else { "no" });
 
+    // Where Whisper runs.
+    for (key, value) in crate::gpu::report() {
+        r.fact(key, value);
+    }
+
     // What the system allows.
     for (key, value) in platform::diagnostics() {
         if value == "not allowed" {

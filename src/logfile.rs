@@ -19,6 +19,11 @@ pub fn log_path() -> PathBuf {
 /// terminal (started from one, where it is read as it comes). Failing leaves
 /// standard error as it was.
 pub fn start() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(start_once);
+}
+
+fn start_once() {
     if std::io::stderr().is_terminal() {
         return;
     }

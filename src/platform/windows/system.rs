@@ -111,7 +111,9 @@ pub fn open_at_login() -> bool {
 /// notification area), or takes it off. Nothing is started now.
 pub fn set_open_at_login(on: bool) -> Result<()> {
     if on {
-        let exe = std::env::current_exe().context("could not find where the app is")?;
+        // The program people start, not the graphics-card build it
+        // handed over to: that one chooses again at every login.
+        let exe = crate::gpu::launcher_exe().context("could not find where the app is")?;
         let value: Vec<u16> = run_command(&exe).encode_utf16().chain([0]).collect();
         // SAFETY: `value` is a NUL-terminated UTF-16 string of the given
         // size in bytes.

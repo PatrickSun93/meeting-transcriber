@@ -90,7 +90,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | *Others* is recorded from | ScreenCaptureKit | the default output device (WASAPI loopback) | the sound server's monitor of the default output (`parec`; PulseAudio or PipeWire) |
-| Whisper runs on | the GPU (Metal) | the processor, or the GPU with `--features vulkan` / `cuda` | the same as Windows |
+| Whisper runs on | the GPU (Metal) | the graphics card when there is one (CUDA on NVIDIA, Vulkan on others), else the processor | the same as Windows |
 | Settings and models | `~/Library/Application Support/Meeting Transcriber` | `%LOCALAPPDATA%\Meeting Transcriber` | `~/.local/share/Meeting Transcriber` |
 | Folder dialog, file manager | Finder | Explorer | zenity or kdialog (else you type the path); the file manager over D-Bus, else `xdg-open` |
 | Dictation hotkey (default) | Right Option, any app (Input Monitoring) | Right Ctrl, any app | Right Ctrl on X11; on Wayland the desktop's shortcut, or `meeting-transcriber dictate toggle` bound to one ([details](#linux-1)) |
@@ -103,7 +103,7 @@ On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If th
 
 ### Windows
 
-**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`. It is a single file: copy it anywhere and pin it to Start or the taskbar. It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
+**Download (untested on a real PC, see the warning above):** get `Meeting-Transcriber-Windows-x86_64.zip` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), unzip it and run `meeting-transcriber.exe`; keep the `vulkan` folder beside it. With an NVIDIA card, get `Meeting-Transcriber-Windows-x86_64-NVIDIA.zip` instead (larger: it holds CUDA's DLLs in `cuda`), which is the fastest. The program starts the graphics-card build that runs on this PC, and runs Whisper on the processor when none does (**Settings → Model** says which, and can turn it off; `meeting-transcriber doctor` too). It is not code-signed, so the first time Windows SmartScreen may say "Windows protected your PC": click **More info → Run anyway**. It needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) (x64), which most PCs already have. Then go on with step 4 below.
 
 To build it yourself instead:
 
@@ -130,7 +130,7 @@ To build it yourself instead:
 
 4. If *Me* stays silent, allow microphone access in **Settings → Privacy & security → Microphone**, including **Let desktop apps access your microphone**.
 
-For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA).
+For the GPU, install the [Vulkan SDK](https://vulkan.lunarg.com/) and build with `cargo build --release --features vulkan`, or the CUDA toolkit and `--features cuda` (NVIDIA). `.\scripts\package-windows.ps1 -Vulkan` (and `-Cuda`) packages the processor build with those in `vulkan\` and `cuda\`, which it then picks from at startup.
 
 The command line works the same way: `meeting-transcriber.exe transcribe --me mic.wav`. A release build is a windowed program, so the terminal shows its prompt again before the transcript is done; in Command Prompt, `start /wait meeting-transcriber.exe transcribe --me mic.wav` waits for it.
 
@@ -165,7 +165,7 @@ The command line works the same way: `meeting-transcriber.exe transcribe --me mi
 
 3. Open **Meeting Transcriber** from the app menu. It runs on X11 and Wayland.
 
-To hand it to someone else, `./scripts/package-linux.sh` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program, its launcher and icon, and `install.sh`. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
+To hand it to someone else, `./scripts/package-linux.sh --vulkan` builds `target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz`: the program with a Vulkan build in `vulkan/`, its launcher and icon, and `install.sh`; add `--cuda` for the `-NVIDIA` archive with a CUDA build and CUDA's libraries in `cuda/`. The program starts the graphics-card build that runs here, else Whisper runs on the processor. They unpack it and run `./install.sh` (or just `./meeting-transcriber`); they need `pulseaudio-utils` for *Others* but no build tools. CI builds the same archive on every push (artifact *Meeting-Transcriber-Linux-x86_64*). It is built on Ubuntu, so it runs on distributions with the same or a newer glibc.
 
 ## Using it
 

@@ -138,6 +138,8 @@ pub struct App {
     meetings_dir: String,
     /// The old models folder of an unfinished move, as stored ("" if none).
     models_move_from: String,
+    /// Takes effect when the app is next opened (Windows; see `gpu`).
+    use_gpu: bool,
     engine: Option<Engine>,
     /// Outputs of replaced engines. Their workers finish the jobs already
     /// queued (the last speech of a meeting) and then hang up.
@@ -212,6 +214,7 @@ impl App {
             models_dir: settings.models_dir.clone(),
             meetings_dir: settings.meetings_dir.clone(),
             models_move_from: settings.models_move_from.clone(),
+            use_gpu: settings.use_gpu,
             engine: None,
             retired: Vec::new(),
             download: None,
@@ -718,6 +721,7 @@ impl App {
             capture_me: self.capture_me,
             capture_others: self.capture_others,
             remove_echo: self.transcript.echo.enabled,
+            use_gpu: self.use_gpu,
             models_dir: self.models_dir.clone(),
             meetings_dir: self.meetings_dir.clone(),
             models_move_from: self.models_move_from.clone(),

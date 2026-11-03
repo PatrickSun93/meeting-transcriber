@@ -31,7 +31,8 @@ jobs:
           path: target/release/bundle/Meeting-Transcriber-macOS.zip
 
   linux:
-    # CPU build; Others is recorded from the sound server with parec.
+    # The processor build, plus a Vulkan build in vulkan/ that it starts
+    # when the graphics driver has Vulkan; Others is recorded with parec.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,18 +45,47 @@ jobs:
       # Wayland and xkbcommon at run time.
       - run: >-
           sudo apt-get update && sudo apt-get install -y
-          libasound2-dev cmake clang libclang-dev pkg-config
+          libasound2-dev cmake clang libclang-dev pkg-config libvulkan-dev glslc
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: ./scripts/package-linux.sh
+      - run: ./scripts/package-linux.sh --vulkan
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Linux-x86_64
           path: target/release/package/Meeting-Transcriber-Linux-x86_64.tar.gz
 
+  linux-nvidia:
+    # The processor build plus a CUDA build in cuda/, with CUDA's runtime
+    # libraries: for NVIDIA cards. Tested by the linux job; this one builds.
+    runs-on: ubuntu-24.04
+    env:
+      # Turing to Blackwell, plus PTX for newer cards.
+      CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: CUDA toolkit
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev cmake clang libclang-dev pkg-config \
+            cuda-nvcc-12-9 cuda-cudart-dev-12-9 cuda-driver-dev-12-9 libcublas-dev-12-9
+          sudo ln -sfn /usr/local/cuda-12.9 /usr/local/cuda
+          echo "CUDA_PATH=/usr/local/cuda-12.9" >> "$GITHUB_ENV"
+          echo "/usr/local/cuda-12.9/bin" >> "$GITHUB_PATH"
+      - run: ./scripts/package-linux.sh --cuda
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-Linux-x86_64-NVIDIA
+          path: target/release/package/Meeting-Transcriber-Linux-x86_64-NVIDIA.tar.gz
+
   windows:
-    # CPU build with MSVC; Others is recorded with WASAPI loopback.
+    # The processor build with MSVC, plus a Vulkan build in vulkan\ that it
+    # starts when the graphics driver has Vulkan; Others is recorded with
+    # WASAPI loopback.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,19 +95,48 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: ./scripts/package-windows.ps1
+      - name: Vulkan SDK
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe -OutFile vulkan-sdk.exe
+          Start-Process -Wait -FilePath .\vulkan-sdk.exe -ArgumentList '--root', 'C:\VulkanSDK', '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          "VULKAN_SDK=C:\VulkanSDK" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "C:\VulkanSDK\Bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - run: ./scripts/package-windows.ps1 -Vulkan
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Windows-x86_64
           path: target/release/package/Meeting-Transcriber-Windows-x86_64.zip
 
+  windows-nvidia:
+    # The processor build plus a CUDA build in cuda\, with CUDA's runtime
+    # DLLs: for NVIDIA cards. Tested by the windows job; this one builds.
+    runs-on: windows-latest
+    env:
+      CUDAARCHS: 75-real;86-real;89-real;120-real;89-virtual
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.9.1'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+      - run: ./scripts/package-windows.ps1 -Cuda
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-Windows-x86_64-NVIDIA
+          path: target/release/package/Meeting-Transcriber-Windows-x86_64-NVIDIA.zip
+
   release:
     # Pushing a version tag (git tag v0.2.0 && git push origin v0.2.0)
     # publishes the three packages as a GitHub release, once all three
     # builds and their tests have passed.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, linux, windows]
+    needs: [macos, linux, linux-nvidia, windows, windows-nvidia]
     runs-on: ubuntu-latest
     permissions:
       contents: write
