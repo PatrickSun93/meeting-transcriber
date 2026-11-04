@@ -57,13 +57,17 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: ./scripts/bundle-macos.sh
+      - run: ./scripts/bundle-macos.sh --dmg
       - name: Zip the app
         run: cd target/release/bundle && ditto -c -k --keepParent "Meeting Transcriber.app" Meeting-Transcriber-macOS.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-macOS
           path: target/release/bundle/Meeting-Transcriber-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-macOS-dmg
+          path: target/release/bundle/Meeting-Transcriber-macOS.dmg
 
   linux:
     # The processor build, plus (GPU runs) a Vulkan build in vulkan/ that it
@@ -227,7 +231,7 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" dist/* \
               --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes \
-              --notes "**The Windows and Linux builds are untested.** They compile and pass their unit tests in CI, but have not been run on a real PC yet and may have problems. The macOS build is the one in daily use. On Windows, Meeting-Transcriber-Setup-x86_64.exe installs the app. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
+              --notes "**The Windows and Linux builds are untested.** They compile and pass their unit tests in CI, but have not been run on a real PC yet and may have problems. The macOS build is the one in daily use. On the Mac, open Meeting-Transcriber-macOS.dmg and drag the app to Applications; on Windows, Meeting-Transcriber-Setup-x86_64.exe installs it. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
           fi
         env:
           GH_TOKEN: ${{ github.token }}

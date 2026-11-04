@@ -9,7 +9,19 @@
 #
 #   ./scripts/bundle-macos.sh            build the app
 #   ./scripts/bundle-macos.sh --install  also copy it to /Applications
+#   ./scripts/bundle-macos.sh --dmg      also make Meeting-Transcriber-macOS.dmg
+#                                        (the app beside a link to /Applications)
 set -euo pipefail
+
+install=false
+dmg=false
+for arg in "$@"; do
+  case "$arg" in
+    --install) install=true ;;
+    --dmg) dmg=true ;;
+    *) echo "unknown option $arg" >&2; exit 1 ;;
+  esac
+done
 
 cd "$(dirname "$0")/.."
 
@@ -56,7 +68,21 @@ codesign --force --deep --sign - "$APP"
 
 echo "Built: $APP"
 
-if [[ "${1:-}" == "--install" ]]; then
+if $dmg; then
+  # A window with the app and Applications side by side, to drag one onto
+  # the other; compressed, as disk images are downloaded.
+  DMG="target/release/bundle/Meeting-Transcriber-macOS.dmg"
+  STAGE="target/release/bundle/dmg"
+  rm -rf "$STAGE" "$DMG"
+  mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -volname "$NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG"
+  rm -rf "$STAGE"
+  echo "Built: $DMG"
+fi
+
+if $install; then
   rm -rf "/Applications/$NAME.app"
   cp -R "$APP" /Applications/
   echo "Installed: /Applications/$NAME.app"

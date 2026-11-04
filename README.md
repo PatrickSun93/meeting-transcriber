@@ -23,6 +23,10 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 
 ## Install (Mac, Apple Silicon, macOS 13 or newer)
 
+**Download:** get `Meeting-Transcriber-macOS.dmg` from the [latest release](https://github.com/PatrickSun93/meeting-transcriber/releases/latest), open it and drag **Meeting Transcriber** onto **Applications** (`Meeting-Transcriber-macOS.zip` holds the same app). It is not signed with an Apple Developer ID, so macOS blocks it the first time: open it once, then choose **Open Anyway** in **System Settings → Privacy & Security**. Then go on with step 4 below.
+
+**Or build it yourself:**
+
 1. Install the build tools, once. You need the **Xcode 26** toolchain or newer, because the system-audio library uses the macOS 26 SDK. It installs on macOS 15.6 or later, and the app itself still runs on macOS 13+. Either install Xcode 26 from the App Store, or install the Command Line Tools and check that `swift --version` reports Swift 6.2 or newer:
 
    ```bash
@@ -65,7 +69,7 @@ Dictation needs two more, both in **System Settings → Privacy & Security**:
 - **Input Monitoring**: to see the hotkey from any app. Without it the app shows a banner with **Open System Settings** and **Try again**; everything else keeps working.
 - **Accessibility**: to press ⌘V for you. Without it the text is still copied to the clipboard.
 
-The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `./scripts/bundle-macos.sh --install`, switch Input Monitoring and Accessibility (like the other two) off and on again for **Meeting Transcriber**, then quit and reopen it.
+The app is signed ad hoc, so each rebuild looks like a new app to macOS: after `./scripts/bundle-macos.sh --install` (or `--dmg` for the disk image), switch Input Monitoring and Accessibility (like the other two) off and on again for **Meeting Transcriber**, then quit and reopen it.
 
 ## Command line and AI agents
 
