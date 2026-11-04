@@ -300,7 +300,7 @@ cargo clippy --all-targets
 cargo run --release
 ```
 
-To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages, and the CUDA add-ons, to a new [GitHub release](https://github.com/PatrickSun93/meeting-transcriber/releases). The app downloads its CUDA add-on from the release of its own version, so the release job checks that the tag matches `Cargo.toml`:
+To publish a release, set `version` in `Cargo.toml`, commit, then push a tag with that version. CI builds and tests all three systems and attaches their packages, and the CUDA add-ons, to a new [GitHub release](https://github.com/PatrickSun93/meeting-transcriber/releases). The app downloads its CUDA add-on from the release of its own version, so the release job checks that the tag matches `Cargo.toml`. Push the tag, or publish a release with that tag on the Releases page (CI then adds the packages to it):
 
 ```bash
 git tag v0.2.0
