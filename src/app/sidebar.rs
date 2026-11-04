@@ -6,6 +6,7 @@ use eframe::egui::{
     text::{LayoutJob, TextWrapping},
 };
 
+use super::library::DEFAULT_TITLE;
 use super::{App, Page, SidebarTab, platform, theme};
 use crate::meetings::{self, Entry, Kind};
 
@@ -162,19 +163,24 @@ impl App {
             return rename_field(ui, entry, title);
         }
 
-        let mut detail = entry.date.format("%H:%M").to_string();
+        // The time, unless the title already is it.
+        let mut detail = Vec::new();
+        if entry.title != DEFAULT_TITLE {
+            detail.push(entry.date.format("%H:%M").to_string());
+        }
         if entry.kind == Kind::Text {
-            detail += "  ·  txt";
+            detail.push("txt".to_string());
         }
         if !entry.tags.is_empty() {
-            detail += &format!("  ·  {}", entry.tags.join(", "));
+            detail.push(entry.tags.join(", "));
         }
+        let detail = detail.join("  ·  ");
         // While recording, only the meeting being recorded can be shown.
         let enabled = !recording || is_open;
         let dot = (recording && is_open).then_some(theme::RECORD_RED);
         let response = list_row(
             ui,
-            &entry.title,
+            &shown_title(&entry.title, entry.date),
             &detail,
             entry.kind == Kind::Text,
             is_open && on_meeting_page,
@@ -244,6 +250,16 @@ impl App {
             RowAction::Delete(e) => self.delete_meeting(&e.path),
             RowAction::CancelDelete => self.list.confirm_delete = None,
         }
+    }
+}
+
+/// The title in the list: a meeting still called by the default title
+/// shows when it started instead, `11/04/2026 @ 14:30`.
+fn shown_title(title: &str, date: chrono::NaiveDateTime) -> String {
+    if title == DEFAULT_TITLE {
+        date.format("%m/%d/%Y @ %H:%M").to_string()
+    } else {
+        title.to_string()
     }
 }
 
@@ -378,4 +394,16 @@ fn nav_item(ui: &mut Ui, icon: &str, label: &str, selected: bool, dot: Option<Co
         painter.circle_filled(rect.right_center() - Vec2::new(14.0, 0.0), 4.0, color);
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn untitled_meetings_show_their_start_time() {
+        let date = crate::meeting::parse_date("2026-11-04T09:05").unwrap();
+        assert_eq!(shown_title(DEFAULT_TITLE, date), "11/04/2026 @ 09:05");
+        assert_eq!(shown_title("Weekly sync", date), "Weekly sync");
+    }
 }
