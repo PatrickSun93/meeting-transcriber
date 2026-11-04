@@ -1,15 +1,18 @@
 name: CI
 
-# Pull requests get the quick checks and the processor packages. The
-# graphics-card builds (Vulkan in the packages, the CUDA add-ons) take long,
-# so they are built on main, for version tags, when run by hand, and for
-# pull requests labelled gpu.
+# Pushes to main, version tags and runs by hand build everything. A pull
+# request runs nothing until it is labelled: ci gives the quick checks and
+# the processor packages, gpu also the graphics-card builds (Vulkan in the
+# packages, the CUDA add-ons), which take long. Without a label its checks
+# show as skipped, which is not a pass. For several stacked pull requests,
+# labelling the top one tests them all in one run.
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
-    # labeled: adding the gpu label starts a run with the GPU builds.
+    # labeled: adding the ci or gpu label starts a run (another label starts
+    # one that skips every job).
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
@@ -19,10 +22,12 @@ on:
         default: true
 
 # A newer push to the same branch cancels its older runs, which would only
-# hold up the runners. Release tags always run to the end.
+# hold up the runners. Release tags always run to the end, and so does a run
+# when a label other than ci or gpu is added: that run builds nothing, so it
+# waits instead of cancelling the run it would replace.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') && !(github.event.action == 'labeled' && github.event.label.name != 'ci' && github.event.label.name != 'gpu') }}
 
 env:
   # Whether this run builds the graphics-card builds (see above).
@@ -37,6 +42,12 @@ env:
 
 jobs:
   macos:
+    # On a pull request, only with the ci or gpu label, and not again when
+    # some other label is added (see the top).
+    if: >-
+      github.event_name != 'pull_request' ||
+      ((contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'gpu')) &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     # Apple Silicon runner: builds the real app with Metal and ScreenCaptureKit.
     runs-on: macos-15
     env:
@@ -70,6 +81,12 @@ jobs:
           path: target/release/bundle/Meeting-Transcriber-macOS.dmg
 
   linux:
+    # On a pull request, only with the ci or gpu label, and not again when
+    # some other label is added (see the top).
+    if: >-
+      github.event_name != 'pull_request' ||
+      ((contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'gpu')) &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     # The processor build, plus (GPU runs) a Vulkan build in vulkan/ that it
     # starts when the graphics driver has Vulkan; Others is recorded with parec.
     runs-on: ubuntu-latest
@@ -101,7 +118,10 @@ jobs:
   linux-cuda:
     # The CUDA add-on: a CUDA build and CUDA's runtime libraries in cuda/,
     # which the app downloads when it finds an NVIDIA card (src/cuda_addon.rs).
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
+    if: >-
+      github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) ||
+      (contains(github.event.pull_request.labels.*.name, 'gpu') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     runs-on: ubuntu-24.04
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
@@ -129,6 +149,12 @@ jobs:
           path: target/release/package/Meeting-Transcriber-Linux-x86_64-CUDA.zip
 
   windows:
+    # On a pull request, only with the ci or gpu label, and not again when
+    # some other label is added (see the top).
+    if: >-
+      github.event_name != 'pull_request' ||
+      ((contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'gpu')) &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     # The processor build with MSVC, plus (GPU runs) a Vulkan build in
     # vulkan\ that it starts when the graphics driver has Vulkan, as a zip
     # and as an installer (Inno Setup); Others is recorded with WASAPI
@@ -176,7 +202,10 @@ jobs:
     # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
     # cuda\. Visual Studio 2022, which CUDA 12 supports (windows-latest has
     # a newer one).
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) || contains(github.event.pull_request.labels.*.name, 'gpu')
+    if: >-
+      github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.gpu) ||
+      (contains(github.event.pull_request.labels.*.name, 'gpu') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
