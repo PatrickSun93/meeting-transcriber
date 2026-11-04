@@ -231,7 +231,7 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" dist/* \
               --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes \
-              --notes "**The Windows and Linux builds are untested.** They compile and pass their unit tests in CI, but have not been run on a real PC yet and may have problems. The macOS build is the one in daily use. On the Mac, open Meeting-Transcriber-macOS.dmg and drag the app to Applications; on Windows, Meeting-Transcriber-Setup-x86_64.exe installs it. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
+              --notes "**Linux is untested; Windows is new.** The macOS build is the one in daily use. The Windows build has been installed and run on a real PC, but much less than the Mac. The Linux build compiles and passes its unit tests in CI, but has not been run on a Linux desktop yet. On the Mac, open Meeting-Transcriber-macOS.dmg and drag the app to Applications; on Windows, Meeting-Transcriber-Setup-x86_64.exe installs it. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
           fi
         env:
           GH_TOKEN: ${{ github.token }}
