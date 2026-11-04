@@ -4,6 +4,7 @@
 #
 #   .\scripts\package-windows.ps1              # Whisper on the processor
 #   .\scripts\package-windows.ps1 -Vulkan      # plus a Vulkan build in vulkan\
+#   .\scripts\package-windows.ps1 -Vulkan -Installer   # and Meeting-Transcriber-Setup-<arch>.exe
 #   .\scripts\package-windows.ps1 -CudaAddon   # only the CUDA add-on (-CUDA.zip)
 #
 # The program starts the best graphics-card build beside it that can run
@@ -11,10 +12,12 @@
 # CUDA's runtime DLLs), which the app downloads from the release of its
 # version when it finds an NVIDIA card (src/cuda_addon.rs).
 #
+# -Installer needs Inno Setup 6 (installer\meeting-transcriber.iss), found on
+# the PATH or in its usual folder.
 # -Vulkan needs the Vulkan SDK, Ninja and a Developer PowerShell for Visual
 # Studio; -CudaAddon the CUDA toolkit (CUDA_PATH) with its Visual Studio
 # integration.
-param([switch]$Vulkan, [switch]$CudaAddon)
+param([switch]$Vulkan, [switch]$CudaAddon, [switch]$Installer)
 $ErrorActionPreference = 'Stop'
 
 Set-Location (Join-Path $PSScriptRoot '..')
@@ -84,7 +87,8 @@ if ($Vulkan) { Add-GpuBuild 'vulkan' $stage | Out-Null }
 Meeting Transcriber for Windows
 
 Run meeting-transcriber.exe, and press Install in its window to put it in
-the Start menu.
+the Start menu. (Meeting-Transcriber-Setup-x86_64.exe from the same release
+installs it the usual way, with an entry in Installed apps.)
 
 It needs the Microsoft Visual C++ Redistributable (x64), which most PCs
 already have: https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
@@ -101,3 +105,16 @@ More: https://github.com/PatrickSun93/meeting-transcriber#windows
 
 Compress-Archive -Path $stage -DestinationPath $zip
 Write-Host "Packaged: $zip"
+
+if ($Installer) {
+    $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+    if (-not $iscc) {
+        $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found: install it from https://jrsoftware.org/isinfo.php' }
+    & $iscc "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $stage).Path)" "/DOutputDir=$((Resolve-Path $out).Path)" `
+        "/DArch=$arch" (Join-Path $PSScriptRoot '..\installer\meeting-transcriber.iss')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Write-Host "Packaged: $(Join-Path $out "Meeting-Transcriber-Setup-$arch.exe")"
+}

@@ -126,8 +126,9 @@ jobs:
 
   windows:
     # The processor build with MSVC, plus (GPU runs) a Vulkan build in
-    # vulkan\ that it starts when the graphics driver has Vulkan; Others is
-    # recorded with WASAPI loopback.
+    # vulkan\ that it starts when the graphics driver has Vulkan, as a zip
+    # and as an installer (Inno Setup); Others is recorded with WASAPI
+    # loopback.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -152,7 +153,8 @@ jobs:
         shell: pwsh
       - if: env.GPU == 'true'
         uses: ilammy/msvc-dev-cmd@v1
-      - run: ./scripts/package-windows.ps1 ${{ env.GPU == 'true' && '-Vulkan' || '' }}
+      - run: choco install innosetup --no-progress -y
+      - run: ./scripts/package-windows.ps1 -Installer ${{ env.GPU == 'true' && '-Vulkan' || '' }}
         shell: pwsh
         env:
           # Short, or the Vulkan shader tool's paths pass Windows' limit.
@@ -161,6 +163,10 @@ jobs:
         with:
           name: Meeting-Transcriber-Windows-x86_64
           path: target/release/package/Meeting-Transcriber-Windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Meeting-Transcriber-Setup-x86_64
+          path: target/release/package/Meeting-Transcriber-Setup-x86_64.exe
 
   windows-cuda:
     # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
@@ -221,7 +227,7 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" dist/* \
               --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes \
-              --notes "**The Windows and Linux builds are untested.** They compile and pass their unit tests in CI, but have not been run on a real PC yet and may have problems. The macOS build is the one in daily use. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
+              --notes "**The Windows and Linux builds are untested.** They compile and pass their unit tests in CI, but have not been run on a real PC yet and may have problems. The macOS build is the one in daily use. On Windows, Meeting-Transcriber-Setup-x86_64.exe installs the app. The -CUDA zips are the CUDA add-ons, which the app downloads by itself on a PC with an NVIDIA card."
           fi
         env:
           GH_TOKEN: ${{ github.token }}
