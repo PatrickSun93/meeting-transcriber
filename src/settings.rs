@@ -7,7 +7,7 @@ use crate::dictation::DictationConfig;
 #[cfg(test)]
 use crate::dictation::hotkey::Hotkey;
 use crate::dictation::hotkey::Shortcut;
-use crate::dictation::ollama::{self, OllamaConfig};
+use crate::dictation::ollama::{self, Api, OllamaConfig};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
@@ -50,9 +50,14 @@ pub struct DictationSettings {
     pub min_seconds: f32,
     pub max_seconds: f32,
     pub ollama: bool,
+    /// Which kind of service the clean-up uses (the settings keep the
+    /// `ollama` names from when Ollama was the only one).
+    pub cleanup_api: Api,
     pub ollama_url: String,
     pub ollama_model: String,
     pub ollama_timeout: f32,
+    /// Empty to read it from the environment (`Api::key_env`).
+    pub cleanup_api_key: String,
 }
 
 impl Default for DictationSettings {
@@ -69,9 +74,11 @@ impl Default for DictationSettings {
             min_seconds: 0.35,
             max_seconds: 300.0,
             ollama: false,
+            cleanup_api: Api::Ollama,
             ollama_url: ollama::DEFAULT_URL.into(),
             ollama_model: ollama::DEFAULT_MODEL.into(),
             ollama_timeout: 15.0,
+            cleanup_api_key: String::new(),
         }
     }
 }
@@ -96,8 +103,23 @@ impl DictationSettings {
             "ollama_url" => self.ollama_url = value.to_string(),
             "ollama_model" => self.ollama_model = value.to_string(),
             "ollama_timeout" => self.ollama_timeout = number(self.ollama_timeout),
+            "cleanup_api" => self.cleanup_api = Api::from_id(value).unwrap_or_default(),
+            "cleanup_api_key" => self.cleanup_api_key = value.to_string(),
             _ => {}
         }
+    }
+
+    /// The key from Settings, else from the environment.
+    fn cleanup_api_key(&self) -> String {
+        let key = self.cleanup_api_key.trim();
+        if !key.is_empty() {
+            return key.to_string();
+        }
+        self.cleanup_api
+            .key_env()
+            .and_then(|name| std::env::var(name).ok())
+            .map(|k| k.trim().to_string())
+            .unwrap_or_default()
     }
 
     pub fn hotkey(&self) -> Shortcut {
@@ -122,8 +144,10 @@ impl DictationSettings {
             min_seconds: self.min_seconds,
             max_seconds: self.max_seconds,
             ollama: self.ollama.then(|| OllamaConfig {
+                api: self.cleanup_api,
                 url: self.ollama_url.trim().to_string(),
                 model: self.ollama_model.trim().to_string(),
+                api_key: self.cleanup_api_key(),
                 timeout: Duration::from_secs_f32(self.ollama_timeout.clamp(1.0, 600.0)),
             }),
         }
@@ -215,7 +239,7 @@ impl Settings {
              dictation={}\ndictation_hotkey={}\ndictation_language={}\ndictation_prompt={}\ndictation_auto_paste={}\n\
              dictation_sounds={}\ndictation_save_recordings={}\ndictation_recordings_dir={}\n\
              dictation_min_seconds={}\ndictation_max_seconds={}\n\
-             ollama={}\nollama_url={}\nollama_model={}\nollama_timeout={}\n",
+             ollama={}\ncleanup_api={}\nollama_url={}\nollama_model={}\nollama_timeout={}\ncleanup_api_key={}\n",
             self.model,
             self.language,
             self.capture_me,
@@ -236,9 +260,11 @@ impl Settings {
             d.min_seconds,
             d.max_seconds,
             d.ollama,
+            d.cleanup_api.id(),
             line(&d.ollama_url),
             line(&d.ollama_model),
             d.ollama_timeout,
+            line(&d.cleanup_api_key),
         )
     }
 
@@ -306,9 +332,11 @@ mod tests {
                 min_seconds: 0.5,
                 max_seconds: 120.0,
                 ollama: true,
+                cleanup_api: Api::Anthropic,
                 ollama_url: "http://127.0.0.1:11434/api/generate".into(),
                 ollama_model: "qwen2.5:7b".into(),
                 ollama_timeout: 7.5,
+                cleanup_api_key: "sk-test".into(),
             },
         };
         assert_eq!(Settings::parse(&s.to_text()), s);

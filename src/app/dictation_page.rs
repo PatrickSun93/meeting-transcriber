@@ -8,7 +8,7 @@ use super::sidebar::list_row;
 use super::{App, Folder, LANGUAGES, Page, language_name, platform, theme};
 use crate::dictation::archive::Clip;
 use crate::dictation::hotkey::{self, Hotkey, Shortcut};
-use crate::dictation::{Phase, voice2cursor};
+use crate::dictation::{Phase, ollama, voice2cursor};
 use crate::meetings;
 use crate::platform::HotkeyWatch;
 
@@ -327,24 +327,62 @@ impl App {
                 self.folder_row(ui, Folder::Recordings);
             }
             ui.add_space(6.0);
-            ui.checkbox(&mut self.dict.settings.ollama, "Clean up with Ollama");
-            ui.weak("A local Ollama model fixes punctuation and spacing (1–3 s more per dictation). If it fails, the text is kept as it was.");
+            ui.checkbox(&mut self.dict.settings.ollama, "Clean up with a language model");
+            ui.weak("A model fixes punctuation and spacing (1–3 s more per dictation): a local Ollama one, or one behind an internet API. If it fails, the text is kept as it was.");
             if self.dict.settings.ollama {
+                let s = &mut self.dict.settings;
                 egui::Grid::new("ollama").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label("Service");
+                    let before = s.cleanup_api;
+                    egui::ComboBox::from_id_salt("cleanup_api")
+                        .selected_text(before.label())
+                        .show_ui(ui, |ui| {
+                            for api in ollama::Api::ALL {
+                                ui.selectable_value(&mut s.cleanup_api, api, api.label());
+                            }
+                        });
+                    // A URL or model left at the old service's default
+                    // follows the switch; one typed in is kept.
+                    if s.cleanup_api != before {
+                        if s.ollama_url.trim() == before.default_url() {
+                            s.ollama_url = s.cleanup_api.default_url().into();
+                        }
+                        if s.ollama_model.trim() == before.default_model() {
+                            s.ollama_model = s.cleanup_api.default_model().into();
+                        }
+                    }
+                    ui.end_row();
                     ui.label("URL");
-                    ui.add(egui::TextEdit::singleline(&mut self.dict.settings.ollama_url).desired_width(320.0));
+                    ui.add(egui::TextEdit::singleline(&mut s.ollama_url).desired_width(320.0));
                     ui.end_row();
                     ui.label("Model");
-                    ui.add(egui::TextEdit::singleline(&mut self.dict.settings.ollama_model).desired_width(200.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut s.ollama_model)
+                            .hint_text("the model name the service uses")
+                            .desired_width(200.0),
+                    );
                     ui.end_row();
+                    if let Some(env) = s.cleanup_api.key_env() {
+                        ui.label("API key");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut s.cleanup_api_key)
+                                .password(true)
+                                .hint_text(format!("or set {env}"))
+                                .desired_width(320.0),
+                        );
+                        ui.end_row();
+                    }
                     ui.label("Timeout");
                     ui.add(
-                        egui::DragValue::new(&mut self.dict.settings.ollama_timeout)
+                        egui::DragValue::new(&mut s.ollama_timeout)
                             .range(1.0..=120.0)
                             .suffix(" s"),
                     );
                     ui.end_row();
                 });
+                if s.cleanup_api != ollama::Api::Ollama && !ollama::is_local(&s.ollama_url) {
+                    ui.weak("Each dictation's text is sent to this service. A key typed here is saved in the settings file, in plain text.");
+                }
             }
         });
         if platform::AUTOSTART {

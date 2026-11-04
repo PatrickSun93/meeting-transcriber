@@ -151,7 +151,10 @@ pub fn doctor() -> Report {
     r.fact("auto_paste", d.auto_paste.to_string());
     r.fact("recordings_dir", d.recordings_dir_path().display().to_string());
     if d.ollama {
-        r.fact("ollama", format!("{} ({})", d.ollama_url, d.ollama_model));
+        r.fact(
+            "cleanup",
+            format!("{} {} ({})", d.cleanup_api.id(), d.ollama_url, d.ollama_model),
+        );
     }
     let running = matches!(
         dictation::claim(&models::app_support_dir().join("dictation.lock")),
