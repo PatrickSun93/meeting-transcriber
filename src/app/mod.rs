@@ -591,11 +591,21 @@ impl App {
             && let Ok(result) = d.done.try_recv()
         {
             let model = d.model;
+            let cancelled = d.cancel.load(Ordering::Relaxed);
             self.download = None;
             match result {
                 Ok(_) if model == self.model => self.ensure_engine(),
                 Ok(_) => {}
-                Err(e) => self.errors.push(format!("Download of {} failed: {e:#}", model.label)),
+                Err(e) if cancelled => self.errors.push(format!("Download of {} failed: {e:#}", model.label)),
+                // Often the network: a browser may still get through (its
+                // proxy, its own DNS), so say how to finish by hand.
+                Err(e) => self.errors.push(format!(
+                    "Download of {} failed: {e:#}. If a browser can open {}, download the file there \
+                     and put it in {}",
+                    model.label,
+                    model.url(),
+                    models::models_dir().display()
+                )),
             }
         }
 

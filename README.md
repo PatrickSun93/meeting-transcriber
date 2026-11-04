@@ -53,7 +53,7 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 
 3. Open **Meeting Transcriber** from Applications.
 
-4. Click **Download (547 MB)** to fetch the Whisper model. You only do this once. Other models can be downloaded from **Settings**.
+4. Click **Download (547 MB)** to fetch the Whisper model. You only do this once. Other models can be downloaded from **Settings**. If the download fails, see [If a model download fails](#if-a-model-download-fails).
 
 ## First run: permissions
 
@@ -295,6 +295,32 @@ The same binary transcribes WAV files from the command line, with the same speak
 `--model` accepts a model id (`large-v3-turbo-q5_0`, `base`, …) or a path to a `ggml-*.bin` file. `--language` accepts a code such as `en` or `zh`.
 
 On Linux, `meeting-transcriber dictate start|stop|toggle` starts and stops dictation in the running app (see [Linux](#linux-1) under Dictation).
+
+## If a model download fails
+
+Models come from `huggingface.co`. An error such as `No such host is known. (os error 11001)` (Windows) or `failed to lookup address` means this computer could not reach it, usually because of a VPN, a proxy or the network's DNS, even when a browser gets through.
+
+- **Behind a VPN or proxy app:** on Windows the app uses the proxy set in the system's internet settings, the one the browser uses. It does not read a proxy auto-config (PAC) script. To pick a proxy yourself, start the app with `HTTPS_PROXY` set (any platform), using the address and port of your proxy:
+
+  ```powershell
+  $env:HTTPS_PROXY = "http://127.0.0.1:7890"
+  & "$env:LOCALAPPDATA\Programs\Meeting Transcriber\meeting-transcriber.exe"
+  ```
+
+  On a VPN app with a TUN (virtual network adapter) mode, turning that on also works, as every program then goes through the VPN.
+- **A company VPN:** its DNS may not answer for outside sites. Download while it is disconnected (a model is only downloaded once), or ask for the company proxy and set `HTTPS_PROXY` as above.
+- **Download it in the browser:** open the link from the error message, which is `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/` followed by the model's file, and put the file, with its name unchanged, in the models folder (shown in **Settings**; by default the `models` folder in the app data folder, `%LOCALAPPDATA%\Meeting Transcriber\models` on Windows, see [Windows and Linux](#windows-and-linux)). The app finds it the next time it starts. Where `huggingface.co` is blocked, the same files are on mirrors such as `hf-mirror.com`, under the same path.
+
+  | Model | File |
+  |---|---|
+  | Large v3 Turbo (recommended) | `ggml-large-v3-turbo-q5_0.bin` |
+  | Large v3 Turbo, full precision | `ggml-large-v3-turbo.bin` |
+  | Large v3 | `ggml-large-v3-q5_0.bin` |
+  | Medium | `ggml-medium-q5_0.bin` |
+  | Small | `ggml-small.bin` |
+  | Base | `ggml-base.bin` |
+
+`meeting-transcriber doctor` shows the models folder and which models it found.
 
 ## Development
 
