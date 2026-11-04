@@ -48,10 +48,13 @@ pub fn cleanup_with(text: &str, model: &str, send: impl FnOnce(&str) -> Result<S
 }
 
 fn post(cfg: &OllamaConfig, body: &str) -> Result<String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(cfg.timeout))
-        .build()
-        .into();
+    let mut config = ureq::Agent::config_builder().timeout_global(Some(cfg.timeout));
+    // Ollama on this computer is reached directly: a proxy (from the
+    // environment, or the Windows system proxy) usually cannot reach it.
+    if is_local(&cfg.url) {
+        config = config.proxy(None);
+    }
+    let agent: ureq::Agent = config.build().into();
     let mut response = agent
         .post(&cfg.url)
         .header("Content-Type", "application/json")
@@ -61,6 +64,16 @@ fn post(cfg: &OllamaConfig, body: &str) -> Result<String> {
         bail!("Ollama answered {}", response.status());
     }
     Ok(response.body_mut().read_to_string()?)
+}
+
+/// Whether `url` points at this computer.
+fn is_local(url: &str) -> bool {
+    let Ok(uri) = url.parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let host = uri.host().unwrap_or_default();
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `{"model":…,"prompt":…,"stream":false}`.
@@ -225,6 +238,15 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_urls_skip_the_proxy() {
+        assert!(is_local(DEFAULT_URL));
+        assert!(is_local("http://127.0.0.1:11434/api/generate"));
+        assert!(is_local("http://[::1]:11434/api/generate"));
+        assert!(!is_local("http://192.168.1.20:11434/api/generate"));
+        assert!(!is_local("https://ollama.example.com/api/generate"));
+    }
 
     #[test]
     fn request_is_valid_json_with_the_prompt() {
