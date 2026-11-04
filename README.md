@@ -231,7 +231,12 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 - **Menu bar** (Mac): a microphone icon shows the state (hourglass loading, mic ready, red mic recording, waveform transcribing, crossed-out mic paused, triangle after an error). Its menu has the last 10 dictations (click one to copy it), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app in the menu bar, recording included; **Quit** (or ⌘Q) really quits.
 - **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name. They go to `Dictation` in the app data folder (`~/Library/Application Support/Meeting Transcriber/Dictation` on the Mac; see [Windows and Linux](#windows-and-linux) for the others). The folder can be changed in Settings.
 - **One copy dictates**: a second copy of Meeting Transcriber (one run from a build folder, say) stays paused while the first one dictates.
-- **Ollama** (off by default): a local model fixes punctuation and Chinese/English spacing, If Ollama fails or is slow, the text is pasted as Whisper wrote it.
+- **Clean-up** (off by default): a language model fixes punctuation and Chinese/English spacing. If it fails or is slow, the text is pasted as Whisper wrote it. **Settings → Dictation** picks the service:
+  - **Ollama (this computer)**: a local model, `http://localhost:11434/api/generate` with `qwen2.5:3b` by default. Nothing leaves the computer.
+  - **OpenAI-compatible API**: any service or local server that answers OpenAI's chat completions (`/v1/chat/completions`), such as OpenAI, DeepSeek, Qwen (DashScope), Groq, OpenRouter, LM Studio or vLLM. Set the URL, the model name the service uses, and the API key (sent as `Authorization: Bearer`; local servers may need none).
+  - **Claude API (Anthropic)**: `https://api.anthropic.com/v1/messages` with `claude-opus-5-5` by default, at low effort. `claude-haiku-5-5` is much cheaper and faster, and enough for this job. Set the API key from the [Claude Console](https://platform.claude.com/).
+
+  The API key can be left empty in Settings and set as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in the environment instead; a key typed in Settings is saved in the settings file in plain text. With an internet API, the text of each dictation is sent to that service. Requests to the internet go through the proxy in `HTTPS_PROXY`, or on Windows the system proxy; ones to this computer do not.
 - **Open at login** (Settings): on the Mac it adds `~/Library/LaunchAgents/com.patricksun.meeting-transcriber.plist`, which opens `/Applications/Meeting Transcriber.app` in the menu bar when you log in. Switching it off removes the file. Nothing is set up until you switch it on.
 
 ### Windows
@@ -282,7 +287,7 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Language | **Auto-detect** handles mixed languages. Picking one language makes short phrases more reliable. |
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
-| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, Ollama clean-up (URL, model, timeout), and **Open at login**. |
+| Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, clean-up (service, URL, model, API key, timeout; see [Dictation](#dictation)), and **Open at login**. |
 
 ## Transcribe recordings
 
@@ -358,7 +363,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
 | `src/session.rs` | Connects the sources, chunkers and transcriber; silences Me while dictating |
 | `src/transcriber.rs` | Whisper engine and job queue (dictation first, then finals; stale partials dropped) |
-| `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, Ollama clean-up |
+| `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, the language-model clean-up |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
 | `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
