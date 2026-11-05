@@ -3,6 +3,7 @@
 
 mod dictation;
 mod dictation_page;
+mod importing;
 mod library;
 mod meeting_page;
 mod path_prompt;
@@ -197,6 +198,9 @@ pub struct App {
     /// Offering to install (Windows, when run from wherever it was unzipped).
     install_offer: bool,
     cuda_addon: CudaAddon,
+    /// A recording being transcribed (Import).
+    import: Option<importing::Import>,
+    import_pick: Option<importing::ImportPick>,
 }
 
 /// Marks that the user does not want to be asked to install.
@@ -268,6 +272,8 @@ impl App {
             dict,
             install_offer: !platform::installed() && !install_declined_path().is_file(),
             cuda_addon: CudaAddon::default(),
+            import: None,
+            import_pick: None,
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -583,6 +589,7 @@ impl App {
         self.poll_background();
         self.poll_export_pick();
         self.poll_engine();
+        self.poll_import();
         self.flush_late_lines();
     }
 
@@ -879,6 +886,7 @@ impl eframe::App for App {
     /// keep being saved and the menu bar item stays current.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.take_dropped_files(ctx);
         if let Some(session) = self.session.as_mut() {
             let silent = session.silence_warnings();
             self.errors.extend(silent);

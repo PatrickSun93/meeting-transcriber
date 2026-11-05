@@ -223,10 +223,10 @@ pub fn copy_text(text: &str) -> Result<()> {
 /// How find-in-transcript is reached from the keyboard.
 pub const FIND_SHORTCUT: &str = if cfg!(target_os = "macos") { "⌘F" } else { "Ctrl+F" };
 
-/// What a folder dialog came back with.
+/// What a folder or file dialog came back with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Picked {
-    Folder(PathBuf),
+    Path(PathBuf),
     Cancelled,
     /// There is no dialog to show (on Linux, neither zenity nor kdialog is
     /// installed), so the caller asks for the path as text instead.
@@ -236,10 +236,29 @@ pub enum Picked {
 /// Shows the native "choose folder" dialog on a background thread, so the
 /// window keeps drawing.
 pub fn pick_folder(prompt: &str, start: &Path, notify: impl Fn() + Send + 'static) -> Receiver<Picked> {
+    pick(prompt, start, None, notify)
+}
+
+/// The native "open file" dialog, showing files with these extensions.
+pub fn pick_file(
+    prompt: &str,
+    start: &Path,
+    extensions: &'static [&'static str],
+    notify: impl Fn() + Send + 'static,
+) -> Receiver<Picked> {
+    pick(prompt, start, Some(extensions), notify)
+}
+
+fn pick(
+    prompt: &str,
+    start: &Path,
+    files: Option<&'static [&'static str]>,
+    notify: impl Fn() + Send + 'static,
+) -> Receiver<Picked> {
     let (tx, rx) = crossbeam_channel::bounded(1);
     let (prompt, start) = (prompt.to_string(), start.to_path_buf());
     std::thread::spawn(move || {
-        let _ = tx.send(imp::run_picker(&prompt, &start));
+        let _ = tx.send(imp::run_picker(&prompt, &start, files));
         notify();
     });
     rx
@@ -266,17 +285,23 @@ fn picked_path(out: std::process::Output) -> Picked {
     if path.is_empty() {
         Picked::Cancelled
     } else {
-        Picked::Folder(PathBuf::from(path))
+        Picked::Path(PathBuf::from(path))
     }
 }
 
-/// AppleScript for the macOS dialog, starting in `start` when it exists.
+/// AppleScript for the macOS dialog, starting in `start` when it exists:
+/// a folder, or with `files` a file of those extensions.
 #[cfg(any(target_os = "macos", test))]
-fn choose_folder_script(prompt: &str, start: &Path) -> String {
+fn choose_script(prompt: &str, start: &Path, files: Option<&[&str]>) -> String {
+    let what = if files.is_some() { "file" } else { "folder" };
     let mut script = format!(
-        "POSIX path of (choose folder with prompt {}",
+        "POSIX path of (choose {what} with prompt {}",
         applescript_string(prompt)
     );
+    if let Some(extensions) = files {
+        let types: Vec<String> = extensions.iter().map(|e| applescript_string(e)).collect();
+        script += &format!(" of type {{{}}}", types.join(", "));
+    }
     if start.is_dir() {
         script += &format!(
             " default location (POSIX file {})",
@@ -351,13 +376,17 @@ mod tests {
 
     #[test]
     fn picker_script_quotes_text() {
-        let script = choose_folder_script(r#"Pick "the" folder \ now"#, Path::new("/no/such/folder"));
+        let script = choose_script(r#"Pick "the" folder \ now"#, Path::new("/no/such/folder"), None);
         assert_eq!(
             script,
             r#"POSIX path of (choose folder with prompt "Pick \"the\" folder \\ now")"#
         );
         let start = std::env::temp_dir();
-        assert!(choose_folder_script("x", &start).contains(" default location (POSIX file \""));
+        assert!(choose_script("x", &start, None).contains(" default location (POSIX file \""));
+        assert_eq!(
+            choose_script("Pick", Path::new("/no/such/folder"), Some(&["mp4", "m4a"])),
+            r#"POSIX path of (choose file with prompt "Pick" of type {"mp4", "m4a"})"#
+        );
     }
 
     #[test]
@@ -404,11 +433,11 @@ mod tests {
         };
         assert_eq!(
             picked_path(output(0, "/home/me/My Meetings\n")),
-            Picked::Folder(PathBuf::from("/home/me/My Meetings"))
+            Picked::Path(PathBuf::from("/home/me/My Meetings"))
         );
         assert_eq!(
             picked_path(output(0, "C:\\Users\\me\r\n")),
-            Picked::Folder(PathBuf::from("C:\\Users\\me"))
+            Picked::Path(PathBuf::from("C:\\Users\\me"))
         );
         // zenity and kdialog exit with 1 on Cancel.
         assert_eq!(picked_path(output(1, "")), Picked::Cancelled);

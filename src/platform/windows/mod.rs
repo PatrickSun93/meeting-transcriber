@@ -62,7 +62,7 @@ pub fn open_folder(dir: &Path) {
 
 /// The Explorer folder dialog (`IFileOpenDialog` picking folders). Runs on
 /// the picker's own thread, which gets its own COM apartment.
-pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
+pub(super) fn run_picker(prompt: &str, start: &Path, files: Option<&[&str]>) -> Picked {
     use windows::Win32::System::Com::{
         COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
     };
@@ -72,31 +72,47 @@ pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
         if CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE).is_err() {
             return Picked::NoDialog;
         }
-        let picked = show_folder_dialog(prompt, start).unwrap_or(Picked::NoDialog);
+        let picked = show_dialog(prompt, start, files).unwrap_or(Picked::NoDialog);
         CoUninitialize();
         picked
     }
 }
 
-/// Shows the dialog and waits for it. An error means it could not be shown.
+/// Shows the dialog (for a folder, or with `files` a file of those
+/// extensions) and waits for it. An error means it could not be shown.
 ///
 /// # Safety
 /// COM must be initialised (single-threaded apartment) on this thread.
-unsafe fn show_folder_dialog(prompt: &str, start: &Path) -> windows::core::Result<Picked> {
+unsafe fn show_dialog(prompt: &str, start: &Path, files: Option<&[&str]>) -> windows::core::Result<Picked> {
     use std::os::windows::ffi::OsStringExt as _;
     use windows::Win32::Foundation::ERROR_CANCELLED;
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     use windows::Win32::UI::Shell::{
-        FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
-        SIGDN_FILESYSPATH,
+        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, IShellItem,
+        SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
     };
-    use windows::core::{HRESULT, HSTRING};
+    use windows::core::{HRESULT, HSTRING, PCWSTR};
 
     // SAFETY: plain COM calls on interfaces this function owns; the path
     // string the dialog allocates is freed with CoTaskMemFree as documented.
     unsafe {
         let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        dialog.SetOptions(dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?;
+        // Kept alive until the dialog has closed: the filter points into them.
+        let (filter_name, filter_spec);
+        match files {
+            None => dialog.SetOptions(dialog.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)?,
+            Some(extensions) => {
+                dialog.SetOptions(dialog.GetOptions()? | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)?;
+                let spec: Vec<String> = extensions.iter().map(|e| format!("*.{e}")).collect();
+                filter_name = HSTRING::from("Recordings");
+                filter_spec = HSTRING::from(spec.join(";"));
+                dialog.SetFileTypes(&[COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(filter_name.as_ptr()),
+                    pszSpec: PCWSTR(filter_spec.as_ptr()),
+                }])?;
+            }
+        }
         dialog.SetTitle(&HSTRING::from(prompt))?;
         if start.is_dir()
             && let Ok(folder) =
@@ -115,7 +131,7 @@ unsafe fn show_folder_dialog(prompt: &str, start: &Path) -> windows::core::Resul
         let name = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
         let path = std::ffi::OsString::from_wide(name.as_wide());
         CoTaskMemFree(Some(name.0 as *const _));
-        Ok(Picked::Folder(path.into()))
+        Ok(Picked::Path(path.into()))
     }
 }
 

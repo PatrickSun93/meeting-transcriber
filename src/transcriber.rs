@@ -155,21 +155,27 @@ pub struct DictationJob {
 pub enum Job {
     Chunk(ChunkJob),
     Dictation(DictationJob),
+    /// A piece of an imported recording: done when there is nothing else,
+    /// so a meeting or a dictation never waits for it. Answered like a
+    /// dictation, on its `reply`.
+    Background(DictationJob),
 }
 
 /// Pending work: dictations, then finals in arrival order, plus the newest
-/// partial per speaker.
+/// partial per speaker, then imports.
 #[derive(Default)]
 pub struct JobQueue {
     dictations: VecDeque<DictationJob>,
     finals: VecDeque<ChunkJob>,
     partials: [Option<ChunkJob>; 2],
+    background: VecDeque<DictationJob>,
 }
 
 impl JobQueue {
     pub fn push(&mut self, job: Job) {
         let job = match job {
             Job::Dictation(d) => return self.dictations.push_back(d),
+            Job::Background(d) => return self.background.push_back(d),
             Job::Chunk(job) => job,
         };
         let slot = job.speaker.index();
@@ -200,13 +206,16 @@ impl JobQueue {
             (Some(a), Some(b)) => usize::from(b.chunk.start < a.chunk.start),
             (Some(_), None) => 0,
             (None, Some(_)) => 1,
-            (None, None) => return None,
+            (None, None) => return self.background.pop_front().map(Job::Background),
         };
         self.partials[pick].take().map(Job::Chunk)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.dictations.is_empty() && self.finals.is_empty() && self.partials.iter().all(Option::is_none)
+        self.dictations.is_empty()
+            && self.finals.is_empty()
+            && self.partials.iter().all(Option::is_none)
+            && self.background.is_empty()
     }
 
     /// Finished utterances waiting, and their seconds of audio.
@@ -304,7 +313,7 @@ pub fn spawn_worker(
                 }
                 let job = match queue.pop() {
                     Some(Job::Chunk(job)) => job,
-                    Some(Job::Dictation(d)) => {
+                    Some(Job::Dictation(d) | Job::Background(d)) => {
                         let result =
                             engine.transcribe_with_prompt(&d.samples, d.language.as_deref(), d.prompt.as_deref());
                         // The dictation thread may have given up waiting.
@@ -366,6 +375,7 @@ pub fn run_job(engine: &mut dyn SpeechToText, job: ChunkJob, outputs: &Sender<Ou
                     end: chunk.end(),
                     text,
                     language: r.language,
+                    who: None,
                 }),
             }
         }
@@ -402,6 +412,7 @@ mod tests {
         match job? {
             Job::Chunk(j) => Some((j.speaker, j.chunk.utterance, j.chunk.kind)),
             Job::Dictation(_) => panic!("unexpected dictation"),
+            Job::Background(_) => panic!("unexpected import"),
         }
     }
 
@@ -450,6 +461,29 @@ mod tests {
         }
         assert_eq!(describe(q.pop()), Some((Speaker::Me, 0, Final)));
         assert_eq!(describe(q.pop()), Some((Speaker::Others, 1, Partial)));
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn imports_wait_for_everything_else() {
+        use ChunkKind::*;
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut q = JobQueue::default();
+        let Job::Dictation(import) = dictation(300, tx.clone()) else {
+            unreachable!()
+        };
+        q.push(Job::Background(import));
+        q.push(job(Speaker::Others, 1, Partial, 0.5));
+        q.push(job(Speaker::Me, 0, Final, 0.0));
+        q.push(dictation(100, tx));
+        assert!(matches!(q.pop(), Some(Job::Dictation(_))));
+        assert_eq!(describe(q.pop()), Some((Speaker::Me, 0, Final)));
+        assert_eq!(describe(q.pop()), Some((Speaker::Others, 1, Partial)));
+        assert!(!q.is_empty());
+        match q.pop() {
+            Some(Job::Background(d)) => assert_eq!(d.samples.len(), 300),
+            other => panic!("expected the import, got {other:?}"),
+        }
         assert!(q.is_empty());
     }
 
