@@ -119,25 +119,43 @@ pub fn open_folder(dir: &Path) {
     spawn(Command::new("xdg-open").arg(dir));
 }
 
+/// KDE's dialog, for a folder or (with patterns) a file.
+fn kdialog(prompt: &str, start: &Path, patterns: Option<&str>) -> Command {
+    let mut kdialog = Command::new("kdialog");
+    match patterns {
+        Some(p) => kdialog
+            .arg("--getopenfilename")
+            .arg(start)
+            .arg(format!("{p}|Recordings")),
+        None => kdialog.arg("--getexistingdirectory").arg(start),
+    };
+    kdialog.args(["--title", prompt]);
+    kdialog
+}
+
 /// zenity (GNOME and most others), else kdialog (KDE). With neither, the
 /// window asks for the path as text.
-pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
+pub(super) fn run_picker(prompt: &str, start: &Path, files: Option<&[&str]>) -> Picked {
     // A trailing separator makes zenity open inside the folder.
     let mut start_arg = start.as_os_str().to_owned();
     start_arg.push("/");
-    let zenity = Command::new("zenity")
-        .args(["--file-selection", "--directory", "--title", prompt, "--filename"])
-        .arg(&start_arg)
-        .output();
-    let out = match zenity {
+    // Both dialogs match patterns case-sensitively.
+    let patterns = files.map(|exts| {
+        exts.iter()
+            .flat_map(|e| [format!("*.{e}"), format!("*.{}", e.to_uppercase())])
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+    let mut zenity = Command::new("zenity");
+    zenity.args(["--file-selection", "--title", prompt]);
+    match &patterns {
+        Some(p) => zenity.arg(format!("--file-filter=Recordings | {p}")),
+        None => zenity.arg("--directory"),
+    };
+    let out = match zenity.arg("--filename").arg(&start_arg).output() {
         Ok(out) => out,
         // Not installed: try KDE's dialog.
-        Err(_) => match Command::new("kdialog")
-            .arg("--getexistingdirectory")
-            .arg(start)
-            .args(["--title", prompt])
-            .output()
-        {
+        Err(_) => match kdialog(prompt, start, patterns.as_deref()).output() {
             Ok(out) => out,
             Err(_) => return Picked::NoDialog,
         },

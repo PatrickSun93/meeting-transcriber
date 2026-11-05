@@ -42,6 +42,8 @@ impl App {
             {
                 self.new_meeting();
             }
+            ui.add_space(4.0);
+            self.import_card(ui);
             ui.add_space(6.0);
         }
         ui.add(

@@ -35,6 +35,17 @@ pub struct Line {
     pub text: String,
     /// Detected language code, e.g. "en" or "zh".
     pub language: Option<String>,
+    /// Who spoke, when it is known: "Speaker 1" in a recording whose
+    /// voices were told apart, or the name it was renamed to. Shown in
+    /// place of Me or Others.
+    pub who: Option<String>,
+}
+
+impl Line {
+    /// The name shown and saved for this line.
+    pub fn label(&self) -> &str {
+        self.who.as_deref().unwrap_or(self.speaker.label())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +226,7 @@ impl Transcript {
             end: f32::MAX,
             text: p.text.clone(),
             language: None,
+            who: None,
         })
     }
 
@@ -270,13 +282,41 @@ impl Transcript {
     pub fn to_text(&self) -> String {
         lines_to_text(&self.lines)
     }
+
+    /// Gives every line of the speaker `from` the name `to`. Returns how
+    /// many lines changed.
+    pub fn rename_speaker(&mut self, from: &str, to: &str) -> usize {
+        let mut changed = 0;
+        for line in &mut self.lines {
+            if line.who.as_deref() == Some(from) && from != to {
+                line.who = Some(to.to_string());
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.revision += 1;
+        }
+        changed
+    }
+}
+
+/// The named speakers of `lines` (an imported recording's), in the order
+/// they first speak.
+pub fn speaker_names(lines: &[Line]) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in lines.iter().filter_map(|l| l.who.as_deref()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// `[mm:ss] Speaker: text`, one line each: the plain-text transcript format.
 pub fn lines_to_text(lines: &[Line]) -> String {
     let mut out = String::new();
     for l in lines {
-        let _ = writeln!(out, "[{}] {}: {}", format_time(l.start), l.speaker.label(), l.text);
+        let _ = writeln!(out, "[{}] {}: {}", format_time(l.start), l.label(), l.text);
     }
     out
 }
@@ -301,7 +341,25 @@ mod tests {
             end: start + 2.0,
             text: text.into(),
             language: None,
+            who: None,
         }
+    }
+
+    #[test]
+    fn a_speaker_is_renamed_on_every_line() {
+        let named = |who: &str| Line {
+            who: Some(who.into()),
+            ..line(Speaker::Others, 0.0, "x")
+        };
+        let mut t = Transcript::default();
+        t.set_lines(vec![named("Speaker 1"), named("Speaker 2"), named("Speaker 1")]);
+        assert_eq!(speaker_names(t.lines()), ["Speaker 1", "Speaker 2"]);
+        let before = t.revision();
+        assert_eq!(t.rename_speaker("Speaker 1", "Ana"), 2);
+        assert_eq!(speaker_names(t.lines()), ["Ana", "Speaker 2"]);
+        assert!(t.revision() > before);
+        assert_eq!(t.rename_speaker("Nobody", "X"), 0);
+        assert_eq!(t.to_text(), "[00:00] Ana: x\n[00:00] Speaker 2: x\n[00:00] Ana: x\n");
     }
 
     #[test]

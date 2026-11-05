@@ -26,6 +26,22 @@ pub fn speaker_color(s: Speaker) -> Color32 {
     }
 }
 
+/// Colours for the speakers of an imported recording, by when they first
+/// speak; after the last one they repeat.
+const NAMED_COLORS: [Color32; 6] = [
+    Color32::from_rgb(64, 132, 238),
+    Color32::from_rgb(232, 142, 40),
+    Color32::from_rgb(46, 166, 120),
+    Color32::from_rgb(196, 90, 200),
+    Color32::from_rgb(214, 84, 84),
+    Color32::from_rgb(40, 160, 190),
+];
+
+/// The `i`th named speaker's colour.
+pub fn named_color(i: usize) -> Color32 {
+    NAMED_COLORS[i % NAMED_COLORS.len()]
+}
+
 /// Colours that differ between dark and light mode.
 struct Palette {
     accent: Color32,
@@ -172,19 +188,58 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
         .response
 }
 
-/// A fixed-width speaker pill, so transcript text lines up.
-pub fn speaker_pill(ui: &mut Ui, speaker: Speaker, faded: bool) {
-    let color = speaker_color(speaker);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(62.0, 20.0), Sense::hover());
+/// A fixed-width speaker pill, so transcript text lines up. `width` is the
+/// same for every line of a transcript (see `pill_width`), and `text` the
+/// label as `fit_label` made it fit.
+pub fn speaker_pill(ui: &mut Ui, text: &str, color: Color32, width: f32, faded: bool) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::click());
     let alpha = if faded { 0.5 } else { 1.0 };
     ui.painter().rect_filled(rect, 10, color.gamma_multiply(0.16 * alpha));
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        speaker.label(),
+        text,
         FontId::proportional(12.0),
         color.gamma_multiply(alpha),
     );
+    response
+}
+
+/// `label`, cut short with "…" when it is too long for a pill of `width`.
+pub fn fit_label(ui: &Ui, label: &str, width: f32) -> String {
+    let font = FontId::proportional(12.0);
+    let fits = |s: &str| {
+        ui.painter()
+            .layout_no_wrap(s.to_string(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+            <= width - 12.0
+    };
+    if fits(label) {
+        return label.to_string();
+    }
+    let chars: Vec<char> = label.chars().collect();
+    let cut = |n: usize| format!("{}…", chars[..n].iter().collect::<String>());
+    let mut n = chars.len();
+    while n > 1 && !fits(&cut(n)) {
+        n -= 1;
+    }
+    cut(n)
+}
+
+/// A pill wide enough for the longest of `labels`, within limits.
+pub fn pill_width<'a>(ui: &Ui, labels: impl IntoIterator<Item = &'a str>) -> f32 {
+    let font = FontId::proportional(12.0);
+    let widest = labels
+        .into_iter()
+        .map(|l| {
+            ui.painter()
+                .layout_no_wrap(l.to_string(), font.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+        .fold(0.0_f32, f32::max);
+    (widest + 16.0).clamp(62.0, 120.0)
 }
 
 /// A slim rounded level meter; `level` is 0..=1.

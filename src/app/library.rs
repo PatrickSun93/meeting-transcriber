@@ -101,7 +101,8 @@ pub(super) struct MeetingList {
     /// A meeting whose Delete was chosen once, awaiting confirmation.
     pub confirm_delete: Option<PathBuf>,
     dir: PathBuf,
-    scanned: Option<Instant>,
+    /// When the folder was last listed; None lists it again now.
+    pub(super) scanned: Option<Instant>,
     focused: bool,
 }
 
@@ -635,6 +636,7 @@ mod tests {
             end: start + 1.0,
             text: text.into(),
             language: Some("en".into()),
+            who: None,
         }
     }
 

@@ -2,15 +2,17 @@
 // also open a console window. The CLI reattaches to its caller's console.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
 use meeting_transcriber::models::{self, DEFAULT_MODEL, ModelInfo};
 use meeting_transcriber::settings::Settings;
-use meeting_transcriber::transcriber::WhisperEngine;
+use meeting_transcriber::transcriber::{SpeechToText as _, WhisperEngine};
 use meeting_transcriber::transcript::format_time;
-use meeting_transcriber::{app, cli, wav};
+use meeting_transcriber::{app, cli, import, media, wav};
 
 const USAGE: &str = "\
 Meeting Transcriber
@@ -54,12 +56,19 @@ Meeting Transcriber
       Lists, reads or changes settings (checked before saving), e.g.
       `settings set dictation_hotkey ctrl+shift+vk:68`.
 
-  meeting-transcriber transcribe [--me FILE.wav] [--others FILE.wav]
+  meeting-transcriber transcribe [--me FILE] [--others FILE]
                                  [--model PATH_OR_ID] [--language CODE]
       Transcribes recordings with the same pipeline, printing each line.
       --me / --others take the microphone and meeting-audio tracks.
       --model defaults to the downloaded large-v3-turbo-q5_0 model.
       --language defaults to auto-detect (e.g. en, zh).
+
+  meeting-transcriber transcribe --file FILE [--no-speakers] [--save]
+                                 [--model PATH_OR_ID] [--language CODE]
+      Transcribes one recording (a Teams or Zoom video: MP4, MOV, M4A,
+      MP3, WAV, FLAC, MKV), its voices told apart as Speaker 1, 2, …
+      (the speaker models, about 33 MB, are downloaded the first time).
+      --no-speakers keeps one track. --save adds it to the meetings.
 ";
 
 fn main() -> Result<()> {
@@ -195,9 +204,63 @@ fn run_dictate(_args: &[String]) -> Result<()> {
     bail!("`dictate` is for Linux; here, hold the dictation hotkey instead")
 }
 
+/// `transcribe --file`: one recording, its voices told apart.
+fn transcribe_file(
+    file: &Path,
+    model_path: &Path,
+    language: Option<&str>,
+    speakers: bool,
+    save_to: Option<&Settings>,
+) -> Result<()> {
+    let loading = Instant::now();
+    let mut engine = WhisperEngine::load(model_path)?;
+    eprintln!(
+        "Loaded {} in {:.1}s",
+        model_path.display(),
+        loading.elapsed().as_secs_f32()
+    );
+    let started = Instant::now();
+    let mut last = None;
+    let (lines, duration) = import::transcribe_file(
+        file,
+        speakers,
+        Arc::new(AtomicBool::new(false)),
+        |stage| {
+            // Each step once, not every packet.
+            let step = std::mem::discriminant(&stage);
+            if last.replace(step) != Some(step) {
+                eprintln!("{}", import::stage_text(&stage));
+            }
+        },
+        |samples| engine.transcribe(samples, language),
+    )?;
+    for line in &lines {
+        println!("[{}] {}: {}", format_time(line.start), line.label(), line.text);
+    }
+    let took = started.elapsed().as_secs_f32();
+    eprintln!(
+        "{} lines, {:.1}s of audio in {:.1}s ({:.2}x real time)",
+        lines.len(),
+        duration,
+        took,
+        took / duration.max(0.001)
+    );
+    if let Some(settings) = save_to {
+        let path = import::save_new(
+            &settings.meetings_dir_path(),
+            &import::meeting_for(file, lines, duration),
+        )?;
+        eprintln!("Saved {}", path.display());
+    }
+    Ok(())
+}
+
 fn run_transcribe(args: &[String]) -> Result<()> {
     let mut me = None;
     let mut others = None;
+    let mut file = None;
+    let mut speakers = true;
+    let mut save = false;
     let mut model = None;
     let mut language = None;
     let mut it = args.iter();
@@ -206,13 +269,22 @@ fn run_transcribe(args: &[String]) -> Result<()> {
         match flag.as_str() {
             "--me" => me = Some(PathBuf::from(value()?)),
             "--others" => others = Some(PathBuf::from(value()?)),
+            "--file" => file = Some(PathBuf::from(value()?)),
+            "--no-speakers" => speakers = false,
+            "--save" => save = true,
             "--model" => model = Some(value()?.clone()),
             "--language" => language = Some(value()?.clone()),
             other => bail!("unknown option {other:?}\n\n{USAGE}"),
         }
     }
-    if me.is_none() && others.is_none() {
-        bail!("give at least one of --me or --others\n\n{USAGE}");
+    if file.is_some() && (me.is_some() || others.is_some()) {
+        bail!("--file is used on its own, without --me or --others\n\n{USAGE}");
+    }
+    if file.is_none() && me.is_none() && others.is_none() {
+        bail!("give --file, or at least one of --me or --others\n\n{USAGE}");
+    }
+    if file.is_none() && (!speakers || save) {
+        bail!("--no-speakers and --save go with --file\n\n{USAGE}");
     }
 
     // Same models folder as the app, including models an unfinished move
@@ -231,8 +303,19 @@ fn run_transcribe(args: &[String]) -> Result<()> {
         );
     }
 
-    let me = me.map(|p| wav::read_wav(&p)).transpose()?;
-    let others = others.map(|p| wav::read_wav(&p)).transpose()?;
+    if let Some(file) = file {
+        return transcribe_file(
+            &file,
+            &model_path,
+            language.as_deref(),
+            speakers,
+            save.then_some(&settings),
+        );
+    }
+
+    let read = |p: PathBuf| media::decode(&p, &AtomicBool::new(false), |_| {});
+    let me = me.map(read).transpose()?;
+    let others = others.map(read).transpose()?;
     let audio_seconds = me.iter().chain(&others).map(|t| t.len()).max().unwrap_or(0) as f32 / 16_000.0;
 
     let loading = Instant::now();
@@ -253,7 +336,7 @@ fn run_transcribe(args: &[String]) -> Result<()> {
             eprintln!(
                 "[{}] {}: {}{}",
                 format_time(line.start),
-                line.speaker.label(),
+                line.label(),
                 line.text,
                 line.language.as_deref().map(|l| format!("  ({l})")).unwrap_or_default()
             );

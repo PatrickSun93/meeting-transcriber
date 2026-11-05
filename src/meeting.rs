@@ -103,7 +103,13 @@ impl Meeting {
         }
         let _ = writeln!(out, "{TRANSCRIPT_HEADING}\n");
         for l in &self.lines {
-            let _ = writeln!(out, "**[{}] {}:** {}", format_time(l.start), l.speaker.label(), l.text);
+            let _ = writeln!(
+                out,
+                "**[{}] {}:** {}",
+                format_time(l.start),
+                one_line(l.label()),
+                l.text
+            );
         }
         out
     }
@@ -320,17 +326,23 @@ fn parse_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Line> {
 }
 
 /// One line: `**[00:03] Me:** text`, or the plain `[00:03] Me: text` of
-/// the old `.txt` files. Also accepts a leading list dash.
+/// the old `.txt` files. Also accepts a leading list dash. Other names
+/// (`**[00:03] Speaker 1:**`, `**[00:03] Alice:**`, from an imported
+/// recording) are read in the bold form only, so a typed `[10:00] Note:`
+/// stays text.
 pub fn parse_transcript_line(raw: &str) -> Option<Line> {
     let s = raw.trim().strip_prefix("- ").unwrap_or(raw.trim());
+    let bold = s.starts_with("**");
     let s = s.strip_prefix("**").unwrap_or(s);
     let rest = s.strip_prefix('[')?;
     let (time, rest) = rest.split_once(']')?;
     let start = parse_time(time)?;
     let (label, text) = rest.trim_start().split_once(':')?;
-    let speaker = match label.trim() {
-        "Me" => Speaker::Me,
-        "Others" => Speaker::Others,
+    let label = label.trim();
+    let (speaker, who) = match label {
+        "Me" => (Speaker::Me, None),
+        "Others" => (Speaker::Others, None),
+        _ if bold && is_speaker_name(label) => (Speaker::Others, Some(label.to_string())),
         _ => return None,
     };
     let text = text.strip_prefix("**").unwrap_or(text).trim();
@@ -340,7 +352,19 @@ pub fn parse_transcript_line(raw: &str) -> Option<Line> {
         end: start,
         text: text.to_string(),
         language: None,
+        who,
     })
+}
+
+/// Longest speaker name read back from a file.
+pub const MAX_SPEAKER_NAME: usize = 40;
+
+/// A name that can stand before the colon of a transcript line.
+pub fn is_speaker_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= MAX_SPEAKER_NAME
+        && name == name.trim()
+        && !name.contains(['*', '[', ']', ':', '\n'])
 }
 
 /// Lines of an old plain-text transcript (`[mm:ss] Me: text`).
@@ -427,7 +451,7 @@ pub fn one_line(title: &str) -> String {
 }
 
 /// A YAML double-quoted string.
-fn yaml_quote(s: &str) -> String {
+pub fn yaml_quote(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
@@ -570,6 +594,7 @@ mod tests {
             end: start,
             text: text.into(),
             language: None,
+            who: None,
         }
     }
 
@@ -729,6 +754,23 @@ mod tests {
         let mut m = Meeting::new("x", date("2026-01-01"));
         m.lines = parse_legacy_text("[00:03] Me: Hi.\n[1:02:05] Others: Bye.\n");
         assert_eq!(m.to_text(), "[00:03] Me: Hi.\n[1:02:05] Others: Bye.\n");
+    }
+
+    #[test]
+    fn named_speakers_are_read_in_the_bold_form_only() {
+        let text =
+            "## Transcript\n\n**[00:03] Speaker 1:** Hi.\n**[00:05] Zhang Wei:** 你好\n[00:09] Note: typed text\n";
+        let m = Meeting::parse(text, "x", date("2026-01-01"));
+        let labels: Vec<_> = m.lines.iter().map(|l| (l.label(), l.speaker)).collect();
+        assert_eq!(labels, [("Speaker 1", Speaker::Others), ("Zhang Wei", Speaker::Others)]);
+        // The plain line is text, joined onto the line before.
+        assert_eq!(m.lines[1].text, "你好 [00:09] Note: typed text");
+        // Me and Others are still themselves, not names.
+        let me = parse_transcript_line("**[00:01] Me:** a").unwrap();
+        assert_eq!((me.speaker, me.who), (Speaker::Me, None));
+        assert!(is_speaker_name("Ana María"));
+        assert!(!is_speaker_name("a: b"));
+        assert!(!is_speaker_name(&"x".repeat(MAX_SPEAKER_NAME + 1)));
     }
 
     #[test]

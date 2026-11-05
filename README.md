@@ -11,6 +11,7 @@ A native app, written in Rust, that writes down your meetings as they happen. It
 - **Any language**: speech is written in the language it was spoken. You can mix languages, and each line is detected on its own.
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
 - **Dictation**: hold Right Option (Mac) or Right Ctrl (Windows, Linux) anywhere and speak; let go and the text is pasted where the cursor is. It uses the same Whisper model as meetings, loaded once. See [Dictation](#dictation).
+- **Import a recording**: a Teams or Zoom video, or any audio file, is transcribed with its speakers told apart (Speaker 1, Speaker 2, …, renamed with a click). See [Import a recording](#import-a-recording).
 
 Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the graphics card, with Vulkan or, on NVIDIA cards, CUDA, else the processor). It uses the `large-v3-turbo` model by default.
 
@@ -289,12 +290,29 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Remove speaker echo | See above. |
 | Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, clean-up (service, URL, model, API key, timeout; see [Dictation](#dictation)), and **Open at login**. |
 
+## Import a recording
+
+**⬆ Import recording…** in the sidebar (or dropping the file on the window) transcribes a recording you already have: a Teams or Zoom recording, a phone's voice memo, a podcast. It becomes a new meeting, named after the file.
+
+- **Files**: MP4, MOV, M4V, M4A, MP3, WAV, FLAC, AIFF, CAF, MKV and Ogg Vorbis; for a video, its sound. Opus (as in most WebM files) can't be read: convert it to MP4, M4A or MP3 first.
+- **Speakers told apart**: one recording holds everyone, so the app finds the voices first with [speakrs](https://github.com/avencera/speakrs) (pyannote's models, run in Rust on the processor, same on every system and with or without CUDA) and then sends each speaker's turns to Whisper on their own. Lines are labelled **Speaker 1**, **Speaker 2**, … in the order people first speak. The speaker models (about 33 MB) are downloaded the first time, into a `speakers` folder in the models folder.
+- **Names**: a recording doesn't say who is who (Teams knows it from each participant's own connection), so click a speaker's pill, or right-click one of their lines, and **Rename** them: every line of theirs changes. The file then reads `**[00:03] Alice:** …`. The filter above the transcript lists the speakers.
+- **How good**: close to pyannote on clear speech. People talking over each other, very similar voices and a lot of background noise make mistakes; a short reply in the middle of someone's turn stays in that turn.
+- **Speed**: telling speakers apart takes about 2 to 3 minutes for an hour of audio on a recent Mac (more on an older PC), then Whisper transcribes at its usual speed. The sidebar shows how far it is; **Cancel** stops it. A meeting being recorded, and dictation, go first: the import waits for them.
+- The meeting's date is when the recording started (from the file's time), and its frontmatter keeps the file name as `source`.
+
 ## Transcribe recordings
 
 The same binary transcribes WAV files from the command line, with the same speaker labels and echo removal:
 
 ```bash
 "/Applications/Meeting Transcriber.app/Contents/MacOS/meeting-transcriber" transcribe --me mic.wav --others meeting.wav
+```
+
+`--me` and `--others` take any file the app can import, not only WAV. For one recording with everyone in it, `--file` tells the speakers apart as the window's Import does; `--save` also adds it to the meetings, and `--no-speakers` keeps it as one track:
+
+```bash
+meeting-transcriber transcribe --file "Weekly sync.mp4" --save
 ```
 
 `--model` accepts a model id (`large-v3-turbo-q5_0`, `base`, …) or a path to a `ggml-*.bin` file. `--language` accepts a code such as `en` or `zh`.
@@ -367,7 +385,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
 | `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
-| `src/app/reader.rs` | Transcript reader: filter, find, copy |
+| `src/app/reader.rs` | Transcript reader: filter by speaker, rename speakers, find, copy |
 | `src/app/library.rs` | Open meeting: autosave, rename, delete, convert, export |
 | `src/app/settings_page.rs` | Models, folders, recognition options |
 | `src/app/dictation.rs` | Dictation in the window: hotkey, engine hand-over, menu bar item, closing to the menu bar |
@@ -381,9 +399,14 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |
 | `src/meetings.rs` | Meetings folder: file names, listing, search, date groups |
 | `src/wav.rs` | Offline mode for WAV files |
+| `src/media.rs` | Reading the sound of audio and video files (Symphonia) |
+| `src/import.rs` | Importing a recording: speakers told apart (speakrs), their turns transcribed, the meeting file |
+| `src/app/importing.rs` | Import in the window: the button, dropped files, progress in the sidebar |
 | `scripts/` | macOS `.app` bundle, Linux install and `.tar.gz`, Windows `.zip` |
 | `assets/` | Linux launcher (`.desktop`) and icon |
 
 ## License
 
 MIT
+
+The speaker models the app downloads for imports are pyannote's [segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) and WeSpeaker's ResNet34 as converted by [speakrs](https://huggingface.co/avencera/speakrs-models), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

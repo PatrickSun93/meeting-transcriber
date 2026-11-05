@@ -41,7 +41,7 @@ impl App {
     /// asks for the path as text, starting from `start`.
     pub(super) fn picked(&mut self, target: PromptFor, title: &str, start: &Path, picked: platform::Picked) {
         match picked {
-            platform::Picked::Folder(dir) => self.use_typed_or_picked(target, &dir.to_string_lossy()),
+            platform::Picked::Path(dir) => self.use_typed_or_picked(target, &dir.to_string_lossy()),
             platform::Picked::Cancelled => {}
             platform::Picked::NoDialog => self.path_prompt = Some(PathPrompt::new(target, title, start)),
         }

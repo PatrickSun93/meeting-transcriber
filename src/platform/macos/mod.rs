@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{Picked, choose_folder_script, spawn};
+use super::{Picked, choose_script, spawn};
 
 mod hotkey;
 mod system;
@@ -91,10 +91,10 @@ pub fn open_folder(dir: &Path) {
     spawn(Command::new("open").arg(dir));
 }
 
-pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
+pub(super) fn run_picker(prompt: &str, start: &Path, files: Option<&[&str]>) -> Picked {
     // `activate` brings the dialog in front of the app window.
     let Ok(out) = Command::new("osascript")
-        .args(["-e", "activate", "-e", &choose_folder_script(prompt, start)])
+        .args(["-e", "activate", "-e", &choose_script(prompt, start, files)])
         .output()
     else {
         return Picked::NoDialog;
@@ -113,6 +113,6 @@ pub(super) fn run_picker(prompt: &str, start: &Path) -> Picked {
     if path.is_empty() {
         Picked::Cancelled
     } else {
-        Picked::Folder(PathBuf::from(path))
+        Picked::Path(PathBuf::from(path))
     }
 }

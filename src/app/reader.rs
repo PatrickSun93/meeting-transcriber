@@ -1,6 +1,7 @@
 //! The transcript reader, for the live meeting and past ones alike: a
-//! readable column with timestamps and speaker pills, a Me/Others filter,
-//! find-in-transcript, and copying single lines.
+//! readable column with timestamps and speaker pills, a filter by speaker
+//! (Me/Others, or the speakers of an imported recording), renaming those
+//! speakers, find-in-transcript, and copying single lines.
 
 use std::ops::Range;
 
@@ -10,8 +11,8 @@ use eframe::egui::{
 };
 
 use super::{App, platform, theme};
-use crate::meeting::find_matches;
-use crate::transcript::{Line, Speaker, format_time};
+use crate::meeting::{MAX_SPEAKER_NAME, find_matches, is_speaker_name};
+use crate::transcript::{Line, Speaker, format_time, speaker_names};
 
 /// Lines longer than this are hard to follow; wider windows get margins.
 const READABLE_WIDTH: f32 = 760.0;
@@ -27,8 +28,10 @@ pub(super) struct Match {
 }
 
 pub(super) struct Reader {
-    /// Show only one speaker.
-    pub filter: Option<Speaker>,
+    /// Show only one speaker: lines whose label (Me, Others or a name) is this.
+    pub filter: Option<String>,
+    /// A speaker being renamed: the old name and the name typed so far.
+    renaming: Option<(String, String)>,
     pub find: String,
     /// The highlighted match, an index into `matches`.
     current: usize,
@@ -36,13 +39,14 @@ pub(super) struct Reader {
     pub notes_open: bool,
     matches: Vec<Match>,
     /// What `matches` was computed for: query, filter, transcript revision.
-    matches_for: Option<(String, Option<Speaker>, u64)>,
+    matches_for: Option<(String, Option<String>, u64)>,
 }
 
 impl Default for Reader {
     fn default() -> Self {
         Self {
             filter: None,
+            renaming: None,
             find: String::new(),
             current: 0,
             scroll_to_current: false,
@@ -58,16 +62,17 @@ impl Reader {
     /// words can be looked up in several meetings.
     pub fn opened(&mut self) {
         self.filter = None;
+        self.renaming = None;
         self.current = 0;
         self.scroll_to_current = !self.find.is_empty();
     }
 
     fn update_matches(&mut self, lines: &[Line], revision: u64) {
-        let key = (self.find.clone(), self.filter, revision);
+        let key = (self.find.clone(), self.filter.clone(), revision);
         if self.matches_for.as_ref() == Some(&key) {
             return;
         }
-        self.matches = transcript_matches(lines, self.filter, &self.find);
+        self.matches = transcript_matches(lines, self.filter.as_deref(), &self.find);
         if self.current >= self.matches.len() {
             self.current = 0;
         }
@@ -81,11 +86,11 @@ impl Reader {
 }
 
 /// Every match of `query` in the lines `filter` lets through, in order.
-pub(super) fn transcript_matches(lines: &[Line], filter: Option<Speaker>, query: &str) -> Vec<Match> {
+pub(super) fn transcript_matches(lines: &[Line], filter: Option<&str>, query: &str) -> Vec<Match> {
     lines
         .iter()
         .enumerate()
-        .filter(|(_, l)| filter.is_none_or(|s| s == l.speaker))
+        .filter(|(_, l)| filter.is_none_or(|f| f == l.label()))
         .flat_map(|(i, l)| {
             find_matches(&l.text, query)
                 .into_iter()
@@ -105,7 +110,7 @@ fn step_index(current: usize, len: usize, forward: bool) -> usize {
 
 /// `[00:03] Me: text`, as one line is copied.
 fn line_text(line: &Line) -> String {
-    format!("[{}] {}: {}", format_time(line.start), line.speaker.label(), line.text)
+    format!("[{}] {}: {}", format_time(line.start), line.label(), line.text)
 }
 
 impl App {
@@ -138,15 +143,29 @@ impl App {
     }
 
     fn reader_toolbar(&mut self, ui: &mut Ui) {
+        // An imported recording's speakers, else Me and Others.
+        let mut choices: Vec<String> = speaker_names(self.transcript.lines())
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        if choices.is_empty() {
+            choices = vec![Speaker::Me.label().into(), Speaker::Others.label().into()];
+        }
+        // A filter for a name that is gone (renamed) shows everything.
+        if self.reader.filter.as_ref().is_some_and(|f| !choices.contains(f)) {
+            self.reader.filter = None;
+        }
         // Wraps in narrow windows rather than drawing over itself.
         ui.horizontal_wrapped(|ui| {
-            for (value, label) in [
-                (None, "All"),
-                (Some(Speaker::Me), "Me"),
-                (Some(Speaker::Others), "Others"),
-            ] {
-                if ui.selectable_label(self.reader.filter == value, label).clicked() {
-                    self.reader.filter = value;
+            if ui.selectable_label(self.reader.filter.is_none(), "All").clicked() {
+                self.reader.filter = None;
+            }
+            for name in choices {
+                if ui
+                    .selectable_label(self.reader.filter.as_ref() == Some(&name), &name)
+                    .clicked()
+                {
+                    self.reader.filter = Some(name);
                 }
             }
             ui.add_space(8.0);
@@ -209,25 +228,38 @@ impl App {
     }
 
     fn reader_lines(&mut self, ui: &mut Ui) {
-        let filter = self.reader.filter;
-        let shown = |s: Speaker| filter.is_none_or(|f| f == s);
+        let filter = self.reader.filter.clone();
+        let shown = |label: &str| filter.as_deref().is_none_or(|f| f == label);
         let lines = self.transcript.lines();
         let previews: Vec<_> = [Speaker::Me, Speaker::Others]
             .into_iter()
-            .filter(|s| shown(*s))
+            .filter(|s| shown(s.label()))
             .filter_map(|s| self.transcript.preview(s).map(|p| (s, p.start, p.text.clone())))
             .collect();
-        if !lines.iter().any(|l| shown(l.speaker)) && previews.is_empty() {
-            empty_state(ui, filter, lines.is_empty());
+        if !lines.iter().any(|l| shown(l.label())) && previews.is_empty() {
+            empty_state(ui, filter.as_deref(), lines.is_empty());
             return;
         }
 
+        let names = speaker_names(lines);
+        let pill_width = theme::pill_width(ui, names.iter().copied());
+        // Each name made to fit once, not once per line.
+        let fitted: Vec<String> = names.iter().map(|n| theme::fit_label(ui, n, pill_width)).collect();
+        let pill_of = |line: &Line| match &line.who {
+            Some(who) => {
+                let i = names.iter().position(|n| n == who).unwrap_or(0);
+                (fitted[i].as_str(), theme::named_color(i))
+            }
+            None => (line.speaker.label(), theme::speaker_color(line.speaker)),
+        };
+        let can_rename = !self.open.read_only();
         let matches = &self.reader.matches;
         let current = matches.get(self.reader.current);
         let mut copy = None;
+        let mut rename = None;
         let mut next_match = 0;
         for (i, line) in lines.iter().enumerate() {
-            if !shown(line.speaker) {
+            if !shown(line.label()) {
                 continue;
             }
             let first = next_match;
@@ -240,7 +272,17 @@ impl App {
                 if timestamp(ui, line.start).on_hover_text("Copy this line").clicked() {
                     copy = Some(line_text(line));
                 }
-                theme::speaker_pill(ui, line.speaker, false);
+                let who = line.who.as_ref().filter(|_| can_rename);
+                let (text, color) = pill_of(line);
+                let pill = theme::speaker_pill(ui, text, color, pill_width, false);
+                if let Some(who) = who
+                    && pill
+                        .on_hover_text(format!("{who}: click to rename"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                {
+                    rename = Some(who.clone());
+                }
                 let job = highlighted(ui, &line.text, hits, current_here.as_ref());
                 ui.add(egui::Label::new(job).wrap().selectable(true))
                     .context_menu(|ui| {
@@ -249,6 +291,11 @@ impl App {
                         }
                         if ui.button("Copy text only").clicked() {
                             copy = Some(line.text.clone());
+                        }
+                        if let Some(who) = who
+                            && ui.button(format!("Rename {who}…")).clicked()
+                        {
+                            rename = Some(who.clone());
                         }
                     });
             });
@@ -260,7 +307,7 @@ impl App {
         for (speaker, start, text) in previews {
             ui.horizontal_top(|ui| {
                 timestamp(ui, start);
-                theme::speaker_pill(ui, speaker, true);
+                theme::speaker_pill(ui, speaker.label(), theme::speaker_color(speaker), pill_width, true);
                 ui.add(egui::Label::new(RichText::new(text).italics().weak()).wrap());
             });
             ui.add_space(LINE_GAP);
@@ -268,7 +315,64 @@ impl App {
         if let Some(text) = copy {
             ui.ctx().copy_text(text);
         }
+        if let Some(who) = rename {
+            self.reader.renaming = Some((who.clone(), who));
+        }
+        self.rename_dialog(ui.ctx());
     }
+
+    /// Renaming a speaker: every one of their lines gets the new name.
+    fn rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some((from, typed)) = &mut self.reader.renaming else {
+            return;
+        };
+        let mut open = true;
+        let (mut apply, mut cancel) = (false, false);
+        egui::Window::new(format!("Rename {from}"))
+            .id(egui::Id::unique("rename_speaker"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("Every line of this speaker gets the new name.");
+                let edit = ui.add(
+                    egui::TextEdit::singleline(typed)
+                        .char_limit(MAX_SPEAKER_NAME)
+                        .hint_text("Name")
+                        .desired_width(240.0),
+                );
+                edit.request_focus();
+                let name = clean_name(typed);
+                let valid = is_speaker_name(&name);
+                if !valid && !typed.trim().is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, "A name can't contain * [ ] or :");
+                }
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(valid, egui::Button::new("Rename")).clicked() || (enter && valid);
+                    cancel = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                });
+            });
+        if apply {
+            let (from, to) = (from.clone(), clean_name(typed));
+            if self.transcript.rename_speaker(&from, &to) > 0 {
+                if self.reader.filter.as_deref() == Some(from.as_str()) {
+                    self.reader.filter = Some(to);
+                }
+                self.mark_new_lines();
+            }
+        }
+        if apply || cancel || !open {
+            self.reader.renaming = None;
+        }
+    }
+}
+
+/// A typed name as it is saved: one line, single spaces.
+fn clean_name(typed: &str) -> String {
+    typed.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Line text with find results tinted, the current one more strongly.
@@ -324,12 +428,12 @@ fn timestamp(ui: &mut Ui, seconds: f32) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-fn empty_state(ui: &mut Ui, filter: Option<Speaker>, no_lines: bool) {
+fn empty_state(ui: &mut Ui, filter: Option<&str>, no_lines: bool) {
     ui.add_space(48.0);
     ui.vertical_centered(|ui| {
         if let (Some(speaker), false) = (filter, no_lines) {
             ui.label(
-                RichText::new(format!("No lines from {}", speaker.label()))
+                RichText::new(format!("No lines from {speaker}"))
                     .size(17.0)
                     .strong()
                     .weak(),
@@ -343,6 +447,7 @@ fn empty_state(ui: &mut Ui, filter: Option<Speaker>, no_lines: bool) {
             "Your microphone shows as Me; everything {} plays shows as Others.",
             platform::THIS_COMPUTER
         ));
+        ui.weak("Or import a recording (or drop it here) to transcribe it, its speakers told apart.");
     });
 }
 
@@ -357,6 +462,7 @@ mod tests {
             end: 0.0,
             text: text.into(),
             language: None,
+            who: None,
         }
     }
 
@@ -369,7 +475,7 @@ mod tests {
         let all = transcript_matches(&lines, None, "ship");
         let at: Vec<_> = all.iter().map(|m| (m.line, m.range.clone())).collect();
         assert_eq!(at, [(0, 0..4), (1, 8..12), (1, 17..21)]);
-        assert_eq!(transcript_matches(&lines, Some(Speaker::Me), "ship").len(), 1);
+        assert_eq!(transcript_matches(&lines, Some("Me"), "ship").len(), 1);
         assert!(transcript_matches(&lines, None, "").is_empty());
     }
 
