@@ -56,6 +56,9 @@ struct Converter {
 }
 
 impl Converter {
+    /// To 16 kHz: the Mac's and Linux's system sound. On Windows every
+    /// source is a cpal stream (`mic.rs`), which says its rate (`to_rate`).
+    #[cfg(not(windows))]
     fn new(speaker: Speaker, sample_rate: u32, channels: usize, tx: Sender<AudioPacket>) -> Self {
         Self::to_rate(speaker, sample_rate, channels, dsp::SAMPLE_RATE, tx)
     }

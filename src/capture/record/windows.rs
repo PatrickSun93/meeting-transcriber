@@ -5,7 +5,9 @@
 //! AAC for the sound, the PC's sound and the microphone mixed into one
 //! track (`mixer.rs`). Each frame is stamped with when it was taken. The
 //! windows that show the recording are kept out of it by their display
-//! affinity, as for a scrolling screenshot.
+//! affinity, as for a scrolling screenshot. Media Foundation's libraries
+//! are loaded only for a recording: Windows N has them only with the Media
+//! Feature Pack, and linked the usual way the app would not start there.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -16,30 +18,30 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use crossbeam_channel::Sender;
+use windows::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
     DeleteObject, GetDC, GetDIBits, HALFTONE, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject, SetBrushOrgEx,
     SetStretchBltMode, StretchBlt,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFAttributes, IMFMediaType, IMFSinkWriter, MF_MT_AUDIO_AVG_BYTES_PER_SECOND, MF_MT_AUDIO_BITS_PER_SAMPLE,
-    MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND, MF_MT_AVG_BITRATE,
-    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE, MF_MT_YUV_MATRIX,
-    MF_TRANSCODE_CONTAINERTYPE, MF_VERSION, MFAudioFormat_AAC, MFAudioFormat_PCM, MFCreateAttributes,
-    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFCreateSinkWriterFromURL, MFMediaType_Audio,
-    MFMediaType_Video, MFNominalRange_16_235, MFSTARTUP_LITE, MFShutdown, MFStartup, MFTranscodeContainerType_MPEG4,
-    MFVideoFormat_H264, MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoTransferMatrix_BT709,
-    eAVEncH264VProfile_Main,
+    IMFAttributes, IMFMediaBuffer, IMFMediaType, IMFSample, IMFSinkWriter, MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+    MF_MT_AUDIO_BITS_PER_SAMPLE, MF_MT_AUDIO_BLOCK_ALIGNMENT, MF_MT_AUDIO_NUM_CHANNELS, MF_MT_AUDIO_SAMPLES_PER_SECOND,
+    MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_MPEG2_PROFILE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SUBTYPE, MF_MT_VIDEO_NOMINAL_RANGE,
+    MF_MT_YUV_MATRIX, MF_TRANSCODE_CONTAINERTYPE, MF_VERSION, MFAudioFormat_AAC, MFAudioFormat_PCM, MFMediaType_Audio,
+    MFMediaType_Video, MFNominalRange_16_235, MFSTARTUP_LITE, MFTranscodeContainerType_MPEG4, MFVideoFormat_H264,
+    MFVideoFormat_NV12, MFVideoInterlace_Progressive, MFVideoTransferMatrix_BT709, eAVEncH264VProfile_Main,
 };
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW};
 use windows::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, HICON, ICONINFO,
 };
-use windows::core::{GUID, HSTRING};
+use windows::core::{GUID, HRESULT, HSTRING, Interface, PCSTR, PCWSTR, s, w};
 
 use super::mixer::Mixer;
-use super::{FPS, FrameClock, Recorded, Sound, bitrate, nv12, video_size};
+use super::{FPS, FrameClock, Recorded, Sound, bitrate, nv12, scaled_down, timer, video_size};
 use crate::audio::{self, AudioPacket};
 use crate::capture::scrolling::Area;
 use crate::transcript::Speaker;
@@ -52,6 +54,11 @@ const AAC_BYTES_PER_SECOND: u32 = 16_000;
 const AUDIO_LAG: Duration = Duration::from_millis(500);
 /// Media Foundation's time unit: 100 nanoseconds.
 const UNITS_PER_SECOND: u64 = 10_000_000;
+/// How long the screen may go unread at the start before the recording
+/// gives up. Later, while Windows shows its lock screen or a UAC prompt,
+/// it can't be read for minutes, and the video keeps its last picture.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(5);
+const NO_MEDIA_FOUNDATION: &str = "Windows has no Media Foundation (Windows N needs the Media Feature Pack)";
 
 pub fn unsupported() -> Option<&'static str> {
     None
@@ -107,15 +114,17 @@ impl Recorder {
 
 /// The recording's thread: Media Foundation on, the recording, and off.
 fn run(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sender<Result<()>>) -> Result<Recorded> {
+    let mf = MediaFoundation::load()?;
     // SAFETY: COM and Media Foundation are started and stopped on this
-    // thread, in pairs.
+    // thread, in pairs; what the recording made is gone before they stop.
     unsafe {
         let com = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let result = MFStartup(MF_VERSION, MFSTARTUP_LITE)
-            .context("Windows has no Media Foundation (Windows N needs the Media Feature Pack)")
+        let result = (mf.startup)(MF_VERSION, MFSTARTUP_LITE)
+            .ok()
+            .context(NO_MEDIA_FOUNDATION)
             .and_then(|()| {
-                let recorded = record(area, path, sound, stop, ready);
-                let _ = MFShutdown();
+                let recorded = record(&mf, area, path, sound, stop, ready);
+                let _ = (mf.shutdown)();
                 recorded
             });
         if com.is_ok() {
@@ -125,7 +134,14 @@ fn run(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sender
     }
 }
 
-fn record(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sender<Result<()>>) -> Result<Recorded> {
+fn record(
+    mf: &MediaFoundation,
+    area: &Area,
+    path: &Path,
+    sound: Sound,
+    stop: &AtomicBool,
+    ready: &Sender<Result<()>>,
+) -> Result<Recorded> {
     let [left, top, right, bottom] = area.desktop();
     let size = video_size((right - left) as u32, (bottom - top) as u32);
     let mut screen = Screen::new([left, top], [right - left, bottom - top], size)?;
@@ -140,33 +156,57 @@ fn record(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sen
             }
         }
     }
-    let writer = Writer::new(path, size, !sources.is_empty())?;
+    let writer = Writer::new(mf, path, size, !sources.is_empty())?;
     let _ = ready.send(Ok(()));
 
     let started = Instant::now();
     let mut clock = FrameClock::new(FPS);
     let lag = samples(AUDIO_LAG);
     let mut mixer = Mixer::new(2, lag);
-    let mut last = Duration::ZERO;
-    while !stop.load(Ordering::Relaxed) {
-        let at = started.elapsed();
-        let frame = nv12::from_bgra(screen.grab()?, size[0] as usize * 4, size[0] as usize, size[1] as usize);
-        writer.video(&frame, at, clock.interval())?;
-        last = at;
-        let now = samples(started.elapsed());
-        mix(&mut mixer, packets.try_iter(), now);
-        writer.audio(mixer.take(now))?;
-        std::thread::sleep(clock.wait_after(started.elapsed()));
-    }
-    // The sound up to the last frame, then the file is finished.
+    // When the last frame was taken, once one was.
+    let mut last: Option<Duration> = None;
+    let recorded = (|| -> Result<()> {
+        while !stop.load(Ordering::Relaxed) {
+            let at = started.elapsed();
+            match screen.grab() {
+                Ok(pixels) => {
+                    let frame = nv12::from_bgra(pixels, size[0] as usize * 4, size[0] as usize, size[1] as usize);
+                    writer.video(&frame, at, clock.interval())?;
+                    last = Some(at);
+                }
+                Err(e) if last.is_none() && at > FIRST_FRAME_WAIT => return Err(e),
+                // Skipped: the video holds the frame before.
+                Err(_) => {}
+            }
+            let now = samples(started.elapsed());
+            mix(&mut mixer, packets.try_iter(), now);
+            writer.audio(mixer.take(now))?;
+            std::thread::sleep(clock.wait_after(started.elapsed()));
+        }
+        Ok(())
+    })();
+    // However it ended: the sound up to the last frame, then the file is
+    // finished, so what was recorded plays.
     drop(sources);
-    let end = samples(last + clock.interval());
+    let length = last.map_or(Duration::ZERO, |at| at + clock.interval());
+    let end = samples(length);
     mix(&mut mixer, packets.try_iter(), end);
-    writer.audio(mixer.take(end + lag))?;
-    writer.finish()?;
-    Ok(Recorded {
-        seconds: (last + clock.interval()).as_secs_f64(),
-    })
+    let sound = writer.audio(mixer.take(end + lag));
+    let finished = writer.finish();
+    match recorded {
+        Ok(()) => {
+            sound?;
+            finished?;
+            Ok(Recorded {
+                seconds: length.as_secs_f64(),
+            })
+        }
+        Err(e) if finished.is_ok() && last.is_some() => Err(e.context(format!(
+            "it stopped at {} (the video up to then is saved)",
+            timer(length.as_secs())
+        ))),
+        Err(e) => Err(e),
+    }
 }
 
 /// How many sound samples `time` is.
@@ -191,11 +231,15 @@ struct Screen {
     origin: [i32; 2],
     source: [i32; 2],
     size: [u32; 2],
+    /// The video is the area scaled down; else its top-left part (all but
+    /// an odd last column or row), copied pixel for pixel.
+    scaled: bool,
     pixels: Vec<u8>,
 }
 
 impl Screen {
     fn new(origin: [i32; 2], source: [i32; 2], size: [u32; 2]) -> Result<Screen> {
+        let scaled = scaled_down([source[0] as u32, source[1] as u32], size);
         // SAFETY: each handle is checked here and released in `drop`.
         unsafe {
             let screen = GetDC(None);
@@ -211,6 +255,7 @@ impl Screen {
                 origin,
                 source,
                 size,
+                scaled,
                 pixels: vec![0; size[0] as usize * size[1] as usize * 4],
             };
             if memory.is_invalid() || bitmap.is_invalid() {
@@ -247,10 +292,10 @@ impl Screen {
             let old: HGDIOBJ = SelectObject(self.memory, self.bitmap.into());
             // Without CAPTUREBLT, which makes the pointer flicker; the
             // pointer is drawn in instead.
-            let copied = if [w, h] == [sw, sh] {
-                BitBlt(self.memory, 0, 0, w, h, Some(self.screen), x, y, SRCCOPY).is_ok()
-            } else {
+            let copied = if self.scaled {
                 StretchBlt(self.memory, 0, 0, w, h, Some(self.screen), x, y, sw, sh, SRCCOPY).as_bool()
+            } else {
+                BitBlt(self.memory, 0, 0, w, h, Some(self.screen), x, y, SRCCOPY).is_ok()
             };
             if copied {
                 self.draw_pointer();
@@ -300,8 +345,14 @@ impl Screen {
                     let _ = DeleteObject(bitmap.into());
                 }
             }
-            let fx = self.size[0] as f32 / self.source[0].max(1) as f32;
-            let fy = self.size[1] as f32 / self.source[1].max(1) as f32;
+            let (fx, fy) = if self.scaled {
+                (
+                    self.size[0] as f32 / self.source[0].max(1) as f32,
+                    self.size[1] as f32 / self.source[1].max(1) as f32,
+                )
+            } else {
+                (1.0, 1.0)
+            };
             let at = |p: i32, origin: i32, f: f32, hotspot: u32| ((p - origin) as f32 * f) as i32 - hotspot as i32;
             let x = at(cursor.ptScreenPos.x, self.origin[0], fx, icon_info.xHotspot);
             let y = at(cursor.ptScreenPos.y, self.origin[1], fy, icon_info.yHotspot);
@@ -325,38 +376,170 @@ impl Drop for Screen {
     }
 }
 
+/// A system library, loaded while this lives.
+struct Library(HMODULE);
+
+impl Library {
+    /// `name` from System32 (and nowhere else).
+    fn open(name: PCWSTR) -> Result<Library> {
+        // SAFETY: loads a system library, freed in `drop`.
+        unsafe { LoadLibraryExW(name, None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .map(Library)
+            .context(NO_MEDIA_FOUNDATION)
+    }
+
+    /// Its function `name`, as `F`.
+    ///
+    /// # Safety
+    /// `F` is a function pointer of the function's documented signature.
+    unsafe fn function<F: Copy>(&self, name: PCSTR) -> Result<F> {
+        // SAFETY: the library is loaded; the caller vouches for `F`, and
+        // the sizes are checked.
+        unsafe {
+            let found = GetProcAddress(self.0, name).context(NO_MEDIA_FOUNDATION)?;
+            assert_eq!(std::mem::size_of::<F>(), std::mem::size_of_val(&found));
+            Ok(std::mem::transmute_copy(&found))
+        }
+    }
+}
+
+impl Drop for Library {
+    fn drop(&mut self) {
+        // SAFETY: loaded in `open`; nothing of it is used after this.
+        let _ = unsafe { FreeLibrary(self.0) };
+    }
+}
+
+/// A Media Foundation function that hands back a new object.
+type Make = unsafe extern "system" fn(*mut *mut c_void) -> HRESULT;
+
+/// Media Foundation's functions this file calls (its objects' methods need
+/// no lookup), from `mfplat.dll` and `mfreadwrite.dll`.
+struct MediaFoundation {
+    startup: unsafe extern "system" fn(u32, u32) -> HRESULT,
+    shutdown: unsafe extern "system" fn() -> HRESULT,
+    create_attributes: unsafe extern "system" fn(*mut *mut c_void, u32) -> HRESULT,
+    create_media_type: Make,
+    create_memory_buffer: unsafe extern "system" fn(u32, *mut *mut c_void) -> HRESULT,
+    create_sample: Make,
+    create_sink_writer: unsafe extern "system" fn(PCWSTR, *mut c_void, *mut c_void, *mut *mut c_void) -> HRESULT,
+    /// Last, so the functions above are never used after them.
+    _libraries: [Library; 2],
+}
+
+impl MediaFoundation {
+    fn load() -> Result<MediaFoundation> {
+        let plat = Library::open(w!("mfplat.dll"))?;
+        let readwrite = Library::open(w!("mfreadwrite.dll"))?;
+        // SAFETY: each as Microsoft documents it: `HRESULT MFStartup(ULONG,
+        // DWORD)`, `HRESULT MFShutdown()`, `HRESULT
+        // MFCreateAttributes(IMFAttributes**, UINT32)`, `HRESULT
+        // MFCreateMediaType(IMFMediaType**)`, `HRESULT
+        // MFCreateMemoryBuffer(DWORD, IMFMediaBuffer**)`, `HRESULT
+        // MFCreateSample(IMFSample**)` and `HRESULT
+        // MFCreateSinkWriterFromURL(LPCWSTR, IMFByteStream*, IMFAttributes*,
+        // IMFSinkWriter**)`.
+        unsafe {
+            Ok(MediaFoundation {
+                startup: plat.function(s!("MFStartup"))?,
+                shutdown: plat.function(s!("MFShutdown"))?,
+                create_attributes: plat.function(s!("MFCreateAttributes"))?,
+                create_media_type: plat.function(s!("MFCreateMediaType"))?,
+                create_memory_buffer: plat.function(s!("MFCreateMemoryBuffer"))?,
+                create_sample: plat.function(s!("MFCreateSample"))?,
+                create_sink_writer: readwrite.function(s!("MFCreateSinkWriterFromURL"))?,
+                _libraries: [plat, readwrite],
+            })
+        }
+    }
+
+    fn attributes(&self, size: u32) -> windows::core::Result<IMFAttributes> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the documented call, into a pointer it fills.
+        unsafe { handed_back((self.create_attributes)(&mut raw, size), raw) }
+    }
+
+    fn media_type(&self) -> windows::core::Result<IMFMediaType> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the documented call, into a pointer it fills.
+        unsafe { handed_back((self.create_media_type)(&mut raw), raw) }
+    }
+
+    fn memory_buffer(&self, length: u32) -> windows::core::Result<IMFMediaBuffer> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the documented call, into a pointer it fills.
+        unsafe { handed_back((self.create_memory_buffer)(length, &mut raw), raw) }
+    }
+
+    fn sample(&self) -> windows::core::Result<IMFSample> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the documented call, into a pointer it fills.
+        unsafe { handed_back((self.create_sample)(&mut raw), raw) }
+    }
+
+    /// A sink writer making the file at `path`, with no byte stream of
+    /// its own.
+    fn sink_writer(&self, path: &Path, attributes: &IMFAttributes) -> windows::core::Result<IMFSinkWriter> {
+        let path = HSTRING::from(path);
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the documented call, with a null-terminated path and
+        // attributes that live through it, into a pointer it fills.
+        unsafe {
+            let result = (self.create_sink_writer)(
+                PCWSTR(path.as_ptr()),
+                std::ptr::null_mut(),
+                attributes.as_raw(),
+                &mut raw,
+            );
+            handed_back(result, raw)
+        }
+    }
+}
+
+/// The object a Media Foundation function handed back, with its result.
+///
+/// # Safety
+/// `raw` is what the function put out as a `T`, with `result`.
+unsafe fn handed_back<T: Interface>(result: HRESULT, raw: *mut c_void) -> windows::core::Result<T> {
+    result.ok()?;
+    if raw.is_null() {
+        return Err(windows::core::Error::empty());
+    }
+    // SAFETY: a reference the function handed over to the caller.
+    Ok(unsafe { T::from_raw(raw) })
+}
+
 /// Media Foundation's sink writer, making the MP4 file.
-struct Writer {
+struct Writer<'a> {
+    mf: &'a MediaFoundation,
     writer: IMFSinkWriter,
     video: u32,
     audio: Option<u32>,
 }
 
-impl Writer {
-    fn new(path: &Path, size: [u32; 2], sound: bool) -> Result<Writer> {
-        let made = || -> windows::core::Result<Writer> {
+impl<'a> Writer<'a> {
+    fn new(mf: &'a MediaFoundation, path: &Path, size: [u32; 2], sound: bool) -> Result<Writer<'a>> {
+        let made = || -> windows::core::Result<Writer<'a>> {
             // SAFETY: Media Foundation's documented calls, with types it
             // made; the writer keeps what it needs.
             unsafe {
-                let mut attributes: Option<IMFAttributes> = None;
-                MFCreateAttributes(&mut attributes, 1)?;
-                let attributes = attributes.ok_or_else(windows::core::Error::empty)?;
+                let attributes = mf.attributes(1)?;
                 attributes.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)?;
-                let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path), None, &attributes)?;
+                let writer = mf.sink_writer(path, &attributes)?;
 
-                let encoded = video_type(&MFVideoFormat_H264, size)?;
+                let encoded = video_type(mf, &MFVideoFormat_H264, size)?;
                 encoded.SetUINT32(&MF_MT_AVG_BITRATE, bitrate(size))?;
                 encoded.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main.0 as u32)?;
                 let video = writer.AddStream(&encoded)?;
-                let frames = video_type(&MFVideoFormat_NV12, size)?;
+                let frames = video_type(mf, &MFVideoFormat_NV12, size)?;
                 frames.SetUINT32(&MF_MT_DEFAULT_STRIDE, size[0])?;
                 writer.SetInputMediaType(video, &frames, None)?;
 
                 let audio = if sound {
-                    let encoded = audio_type(&MFAudioFormat_AAC)?;
+                    let encoded = audio_type(mf, &MFAudioFormat_AAC)?;
                     encoded.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, AAC_BYTES_PER_SECOND)?;
                     let audio = writer.AddStream(&encoded)?;
-                    let pcm = audio_type(&MFAudioFormat_PCM)?;
+                    let pcm = audio_type(mf, &MFAudioFormat_PCM)?;
                     pcm.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, 2)?;
                     pcm.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, AUDIO_RATE * 2)?;
                     writer.SetInputMediaType(audio, &pcm, None)?;
@@ -365,7 +548,12 @@ impl Writer {
                     None
                 };
                 writer.BeginWriting()?;
-                Ok(Writer { writer, video, audio })
+                Ok(Writer {
+                    mf,
+                    writer,
+                    video,
+                    audio,
+                })
             }
         };
         made().map_err(|e| anyhow!("could not start the video file {}: {e}", path.display()))
@@ -399,13 +587,13 @@ impl Writer {
         // SAFETY: the buffer is locked while it is filled with no more
         // than its length, and unlocked before it is handed on.
         unsafe {
-            let buffer = MFCreateMemoryBuffer(bytes.len() as u32)?;
+            let buffer = self.mf.memory_buffer(bytes.len() as u32)?;
             let mut data: *mut u8 = std::ptr::null_mut();
             buffer.Lock(&mut data, None, None)?;
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
             buffer.Unlock()?;
             buffer.SetCurrentLength(bytes.len() as u32)?;
-            let sample = MFCreateSample()?;
+            let sample = self.mf.sample()?;
             sample.AddBuffer(&buffer)?;
             sample.SetSampleTime(at)?;
             sample.SetSampleDuration(length)?;
@@ -434,10 +622,10 @@ fn pair(high: u32, low: u32) -> u64 {
 ///
 /// # Safety
 /// Media Foundation is started.
-unsafe fn video_type(subtype: &GUID, size: [u32; 2]) -> windows::core::Result<IMFMediaType> {
+unsafe fn video_type(mf: &MediaFoundation, subtype: &GUID, size: [u32; 2]) -> windows::core::Result<IMFMediaType> {
     // SAFETY: setting attributes of a type made here.
     unsafe {
-        let kind = MFCreateMediaType()?;
+        let kind = mf.media_type()?;
         kind.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
         kind.SetGUID(&MF_MT_SUBTYPE, subtype)?;
         kind.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
@@ -454,10 +642,10 @@ unsafe fn video_type(subtype: &GUID, size: [u32; 2]) -> windows::core::Result<IM
 ///
 /// # Safety
 /// Media Foundation is started.
-unsafe fn audio_type(subtype: &GUID) -> windows::core::Result<IMFMediaType> {
+unsafe fn audio_type(mf: &MediaFoundation, subtype: &GUID) -> windows::core::Result<IMFMediaType> {
     // SAFETY: setting attributes of a type made here.
     unsafe {
-        let kind = MFCreateMediaType()?;
+        let kind = mf.media_type()?;
         kind.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
         kind.SetGUID(&MF_MT_SUBTYPE, subtype)?;
         kind.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;

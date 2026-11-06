@@ -75,6 +75,16 @@ pub fn unsupported() -> Option<&'static str> {
     None
 }
 
+/// Whether pictures leave this app's windows out by themselves: on the Mac
+/// from macOS 14 (ScreenCaptureKit). Elsewhere, and on macOS 13 (Quartz),
+/// the window hides for a picture asked for from it.
+pub fn excludes_own_windows() -> bool {
+    #[cfg(target_os = "macos")]
+    return macos::at_least_macos(14);
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
 /// Whether the Mac lets this process record the screen, for `doctor`.
 #[cfg(target_os = "macos")]
 pub fn screen_recording_allowed() -> bool {

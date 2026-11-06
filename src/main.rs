@@ -8,11 +8,12 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, bail};
+use meeting_transcriber::media::{self, Tracks};
 use meeting_transcriber::models::{self, DEFAULT_MODEL, ModelInfo};
 use meeting_transcriber::settings::Settings;
 use meeting_transcriber::transcriber::{SpeechToText as _, WhisperEngine};
 use meeting_transcriber::transcript::format_time;
-use meeting_transcriber::{app, cli, import, media, wav};
+use meeting_transcriber::{app, cli, import, wav};
 
 const USAGE: &str = "\
 Meeting Transcriber
@@ -207,6 +208,7 @@ fn run_dictate(_args: &[String]) -> Result<()> {
 /// `transcribe --file`: one recording, its voices told apart.
 fn transcribe_file(
     file: &Path,
+    tracks: Tracks,
     model_path: &Path,
     language: Option<&str>,
     speakers: bool,
@@ -223,6 +225,7 @@ fn transcribe_file(
     let mut last = None;
     let (lines, duration) = import::transcribe_file(
         file,
+        tracks,
         speakers,
         Arc::new(AtomicBool::new(false)),
         |stage| {
@@ -304,8 +307,10 @@ fn run_transcribe(args: &[String]) -> Result<()> {
     }
 
     if let Some(file) = file {
+        let tracks = Tracks::for_file(&file, &settings.meetings_dir_path());
         return transcribe_file(
             &file,
+            tracks,
             &model_path,
             language.as_deref(),
             speakers,
@@ -313,7 +318,7 @@ fn run_transcribe(args: &[String]) -> Result<()> {
         );
     }
 
-    let read = |p: PathBuf| media::decode(&p, &AtomicBool::new(false), |_| {});
+    let read = |p: PathBuf| media::decode(&p, Tracks::First, &AtomicBool::new(false), |_| {});
     let me = me.map(read).transpose()?;
     let others = others.map(read).transpose()?;
     let audio_seconds = me.iter().chain(&others).map(|t| t.len()).max().unwrap_or(0) as f32 / 16_000.0;

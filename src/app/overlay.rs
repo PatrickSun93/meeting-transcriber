@@ -216,7 +216,7 @@ impl Overlay {
         let d = self.shot.display;
         let origin = pos2(d.origin_px[0] as f32, d.origin_px[1] as f32);
         let size = vec2(self.shot.image.width as f32, self.shot.image.height as f32);
-        keep_at(ctx, origin, Some(size));
+        keep_at(ctx, origin, Some(size), d.scale);
         ctx.request_repaint();
     }
 
@@ -541,9 +541,17 @@ impl Overlay {
 
 /// Moves the viewport being drawn to `origin` on the desktop (in its
 /// pixels), and with `size` sizes it, when it is more than a point off: the
-/// first guess misses where displays scale differently.
-pub(super) fn keep_at(ctx: &egui::Context, origin: Pos2, size: Option<Vec2>) {
-    let ppp = ctx.pixels_per_point();
+/// first guess misses where displays scale differently. `scale` is the
+/// pixels per point of the display they were measured on. The Mac lays its
+/// desktop out in points, so those are the points wherever the window
+/// lands; elsewhere desktop pixels are the screens' own, which the
+/// window's own scale turns into its points.
+pub(super) fn keep_at(ctx: &egui::Context, origin: Pos2, size: Option<Vec2>, scale: f32) {
+    let ppp = if cfg!(target_os = "macos") {
+        scale.max(0.25)
+    } else {
+        ctx.pixels_per_point()
+    };
     let Some(have) = ctx.input(|i| i.viewport().inner_rect) else {
         return;
     };
@@ -584,7 +592,7 @@ pub(super) fn outline(ctx: &egui::Context, area: &Area, title: &str, ready: &mut
                 *ready = raise_overlay(&title, false) && hide_from_captures(&title);
             }
             if placing {
-                keep_at(ui.ctx(), origin, Some(size));
+                keep_at(ui.ctx(), origin, Some(size), scale);
             }
             ui.painter().rect_filled(ui.max_rect(), 0.0, OUTLINE);
         });

@@ -13,6 +13,7 @@ use eframe::egui;
 
 use super::path_prompt::PromptFor;
 use super::{App, Page, platform};
+use crate::capture::files;
 use crate::meeting::{self, Meeting};
 use crate::meetings::{self, Kind, Library};
 use crate::transcript::Line;
@@ -287,6 +288,42 @@ impl App {
         if self.open.path.as_deref() == Some(from) {
             self.open.path = Some(to.to_path_buf());
         }
+        self.capture.moved(from, to);
+    }
+
+    /// Takes `line` out of the notes of the meeting in `path`: the open
+    /// one, or its file.
+    pub(super) fn unlink_note(&mut self, path: &Path, line: &str) {
+        if self.open.path.as_deref() == Some(path) {
+            let notes = files::remove_line(&self.open.meeting.notes, line);
+            if notes != self.open.meeting.notes {
+                self.open.meeting.notes = notes;
+                self.mark_edited();
+                self.save_open();
+            }
+            return;
+        }
+        // Deleted meanwhile: nothing to take out.
+        if !path.exists() {
+            return;
+        }
+        let result = (|| -> anyhow::Result<()> {
+            let (open, lines) = load(path, Kind::Markdown)?;
+            let mut m = open.meeting;
+            let notes = files::remove_line(&m.notes, line);
+            if notes == m.notes {
+                return Ok(());
+            }
+            m.notes = notes;
+            m.lines = lines;
+            write_atomic(path, &m.to_markdown()).with_context(|| format!("writing {}", path.display()))
+        })();
+        if let Err(e) = result {
+            self.report(format!(
+                "A file was not saved, and its link could not be taken out of the meeting's notes: {e:#}"
+            ));
+        }
+        self.list.scanned = None;
     }
 
     /// Shows an error once, however often it happens.

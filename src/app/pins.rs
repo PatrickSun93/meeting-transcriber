@@ -57,8 +57,9 @@ struct Pin {
     zoom: f32,
     /// Where it first shows on the desktop, in points.
     at: Pos2,
-    /// Where it belongs on the desktop in pixels, while it is put right.
-    place: Option<Pos2>,
+    /// Where it belongs on the desktop in pixels, and the pixels per point
+    /// of the display there, while it is put right.
+    place: Option<(Pos2, f32)>,
     frames: u32,
     source: Source,
     zoomed: Option<Instant>,
@@ -85,7 +86,15 @@ impl Default for Pins {
 
 impl Pins {
     /// Adds a pin of `image`, `size` points at 100%, first shown at `at`.
-    fn add(&mut self, ctx: &egui::Context, image: Image, size: Vec2, at: Pos2, place: Option<Pos2>, source: Source) {
+    fn add(
+        &mut self,
+        ctx: &egui::Context,
+        image: Image,
+        size: Vec2,
+        at: Pos2,
+        place: Option<(Pos2, f32)>,
+        source: Source,
+    ) {
         // Larger than the graphics card takes: shown a little softer.
         let max = ctx.input(|i| i.max_texture_side) as u32;
         let shrunk;
@@ -130,7 +139,7 @@ impl App {
             image,
             size,
             (origin.to_vec2() / scale).to_pos2(),
-            Some(origin),
+            Some((origin, scale)),
             source,
         );
     }
@@ -231,8 +240,8 @@ impl Pin {
         self.frames += 1;
         let place = self.place.filter(|_| self.frames <= PLACE_FRAMES);
         ctx.show_viewport_immediate(ViewportId::from_hash_of(&title), builder, |ui, _| {
-            if let Some(origin) = place {
-                keep_at(ui.ctx(), origin, None);
+            if let Some((origin, scale)) = place {
+                keep_at(ui.ctx(), origin, None, scale);
                 ui.ctx().request_repaint();
             }
             self.ui(ui)

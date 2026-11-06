@@ -126,7 +126,7 @@ fn mouse_location() -> Result<CGPoint> {
     Ok(event.location())
 }
 
-fn at_least_macos(major: isize) -> bool {
+pub(super) fn at_least_macos(major: isize) -> bool {
     NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(NSOperatingSystemVersion {
         majorVersion: major,
         minorVersion: 0,

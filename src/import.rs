@@ -14,6 +14,7 @@ use chrono::NaiveDateTime;
 
 use crate::audio::dsp::SAMPLE_RATE;
 use crate::chunker::{Chunk, Chunker, ChunkerConfig};
+use crate::media::Tracks;
 use crate::meeting::{self, Meeting};
 use crate::meetings;
 use crate::models;
@@ -218,16 +219,18 @@ pub fn stage_text(stage: &Stage) -> String {
     }
 }
 
-/// Turns a recording into transcript lines. `recognize` runs Whisper on
-/// one piece; `stage` hears how far it has got.
+/// Turns a recording into transcript lines, of its first sound track or
+/// all of them (`tracks`). `recognize` runs Whisper on one piece; `stage`
+/// hears how far it has got.
 pub fn transcribe_file(
     path: &Path,
+    tracks: Tracks,
     tell_speakers: bool,
     cancel: Arc<AtomicBool>,
     mut stage: impl FnMut(Stage),
     mut recognize: impl FnMut(&[f32]) -> Result<Recognized>,
 ) -> Result<(Vec<Line>, f32)> {
-    let audio = crate::media::decode(path, &cancel, |seconds| stage(Stage::Reading { seconds }))?;
+    let audio = crate::media::decode(path, tracks, &cancel, |seconds| stage(Stage::Reading { seconds }))?;
     let duration = audio.len() as f32 / SAMPLE_RATE as f32;
     let turns = if tell_speakers {
         if !speaker_models_present() {

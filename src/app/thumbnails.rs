@@ -45,9 +45,10 @@ impl Default for Thumbnails {
 
 impl Thumbnails {
     /// Shows the PNG pictures `notes` link, relative to `dir` (the meeting
-    /// file's folder). Nothing when there are none. Returns the picture
-    /// to pin, when that was asked for.
-    pub fn show(&mut self, ui: &mut Ui, dir: &Path, notes: &str) -> Option<PathBuf> {
+    /// file's folder). Nothing when there are none. Those in `pending` are
+    /// still being written, and are read once they are not. Returns the
+    /// picture to pin, when that was asked for.
+    pub fn show(&mut self, ui: &mut Ui, dir: &Path, notes: &str, pending: &[PathBuf]) -> Option<PathBuf> {
         for (path, image) in self.loaded.1.try_iter() {
             let thumb = match image {
                 Some(image) => Thumb::Ready(ui.ctx().load_texture(
@@ -72,14 +73,19 @@ impl Thumbnails {
                 paths.push(path);
             }
         }
-        // Textures of pictures no longer linked are let go.
-        self.cache.retain(|p, _| paths.contains(p));
+        // Textures of pictures no longer linked are let go, and a picture
+        // being written is read again once it is there.
+        self.cache.retain(|p, _| paths.contains(p) && !pending.contains(p));
         if paths.is_empty() {
             return None;
         }
         let mut pin = None;
         ui.horizontal_wrapped(|ui| {
             for path in &paths {
+                if pending.contains(path) {
+                    ui.add_sized([HEIGHT, HEIGHT], egui::Spinner::new());
+                    continue;
+                }
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 let thumb = self.cache.entry(path.clone()).or_insert_with(|| {
                     load(path.clone(), self.loaded.0.clone(), ui.ctx().clone());

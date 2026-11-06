@@ -284,7 +284,10 @@ impl App {
         });
         ui.add_space(4.0);
         if let Some(dir) = self.open.path.as_deref().and_then(|p| p.parent())
-            && let Some(pin) = self.capture.thumbnails.show(ui, dir, &self.open.meeting.notes)
+            && let Some(pin) = self
+                .capture
+                .thumbnails
+                .show(ui, dir, &self.open.meeting.notes, &self.capture.pending)
         {
             self.pin_file(pin);
         }

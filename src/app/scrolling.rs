@@ -161,7 +161,7 @@ impl App {
                 }
             }
             if placing {
-                keep_at(ui.ctx(), origin, None);
+                keep_at(ui.ctx(), origin, None, scale);
             }
             control(ui, progress)
         });

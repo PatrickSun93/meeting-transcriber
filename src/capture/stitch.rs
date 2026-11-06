@@ -268,7 +268,10 @@ impl Stitcher {
                 self.rgba
                     .extend_from_slice(&frame.rgba[(bottom - by) * row..height * row]);
                 self.height = (kept + height - bottom + by) as u32;
-                self.tail = (height - top) as u32;
+                // The end of the long picture is the rows that were there
+                // before, moved up, and the new ones: less than the band
+                // when a header shrank or went.
+                self.tail = (height - top).min(self.tail as usize + by) as u32;
                 Step::Grew(by as u32)
             }
         };
@@ -416,6 +419,28 @@ mod tests {
         let (steps, long) = scroll(&content, &header, &footer, 236, &tops);
         assert!(steps.iter().all(|s| matches!(s, Step::Grew(_))), "{steps:?}");
         assert_eq!(long, stack(&[&header, &content, &footer]));
+    }
+
+    #[test]
+    fn a_header_that_goes_away_does_not_overwrite_the_page() {
+        let content = page(160, 800, 41);
+        let header = rows(&page(160, 80, 43), 0, 60);
+        let mut stitcher = Stitcher::new(stack(&[&header, &rows(&content, 0, 240)]));
+        assert_eq!(
+            stitcher.push(stack(&[&header, &rows(&content, 150, 240)])),
+            Step::Grew(150)
+        );
+        // The header scrolls away with the page.
+        let gone = stack(&[&rows(&header, 20, 40), &rows(&content, 150, 260)]);
+        assert_eq!(stitcher.push(gone.clone()), Step::Grew(20));
+        // Then the header's last rows change in place: still, and only
+        // the rows that are the end of the long picture are taken.
+        let mut changed = gone;
+        for v in &mut changed.rgba[..160 * 4 * 30] {
+            *v = v.saturating_sub(20);
+        }
+        assert_eq!(stitcher.push(changed), Step::Still);
+        assert_eq!(stitcher.finish(u32::MAX), stack(&[&header, &rows(&content, 0, 410)]));
     }
 
     #[test]

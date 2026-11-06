@@ -6,8 +6,8 @@
 //! in its notes, or in the Screenshots folder; or pinning it to the screen
 //! (`pins.rs`); and the Screenshots card in Settings.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
@@ -39,6 +39,9 @@ pub(super) enum Trigger {
     Menu,
 }
 
+/// How long quitting the app waits for screenshots still being written.
+const SAVE_WAIT: Duration = Duration::from_secs(5);
+
 /// A picture being written, on its thread.
 struct Saved {
     path: PathBuf,
@@ -46,6 +49,16 @@ struct Saved {
     result: Result<()>,
     /// Said after the notice that it was saved.
     aside: Option<String>,
+}
+
+/// A line added to a meeting's notes for a file still being written, taken
+/// out again if the file can't be: it would link to nothing.
+struct NoteLine {
+    /// The file it links.
+    file: PathBuf,
+    /// The meeting's file, followed when it is renamed.
+    meeting: PathBuf,
+    line: String,
 }
 
 /// When a screenshot was taken, and whether it goes into the notes.
@@ -80,6 +93,8 @@ pub(super) struct CaptureState {
     /// Pictures and videos being written, so a second one does not take
     /// the same name.
     pub pending: Vec<PathBuf>,
+    /// Their lines in the notes.
+    lines: Vec<NoteLine>,
     pub thumbnails: Thumbnails,
     pub pins: Pins,
     /// What text drawn on screenshots is drawn in, once some is.
@@ -100,10 +115,21 @@ impl CaptureState {
             recorded: None,
             saved: crossbeam_channel::unbounded(),
             pending: Vec::new(),
+            lines: Vec::new(),
             thumbnails: Thumbnails::default(),
             pins: Pins::default(),
             fonts: None,
             fallbacks_read: 0,
+        }
+    }
+
+    /// Keeps the lines in the notes of a meeting whose file was renamed
+    /// pointing at it.
+    pub fn moved(&mut self, from: &Path, to: &Path) {
+        for line in &mut self.lines {
+            if line.meeting == from {
+                line.meeting = to.to_path_buf();
+            }
         }
     }
 }
@@ -126,9 +152,10 @@ impl App {
             self.show_window(&self.ctx.clone());
             return;
         }
-        // The Mac leaves this app's windows out of the picture by itself.
+        // Where the picture leaves this app's windows out by itself, the
+        // window can stay.
         let in_window = matches!(trigger, Trigger::Window | Trigger::Notes);
-        let hide = in_window && !cfg!(target_os = "macos") && !self.dict.window_hidden;
+        let hide = in_window && !capture::excludes_own_windows() && !self.dict.window_hidden;
         if hide {
             self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
@@ -196,17 +223,36 @@ impl App {
         }
         let saved: Vec<Saved> = self.capture.saved.1.try_iter().collect();
         for s in saved {
-            self.capture.pending.retain(|p| *p != s.path);
-            let name = s.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let aside = s.aside.map(|a| format!(" ({a})")).unwrap_or_default();
-            match s.result {
-                Ok(()) if s.copied => self.notify(format!("Copied, and saved as {name}{aside}"), Some(s.path)),
-                Ok(()) => self.notify(format!("Saved {name}{aside}"), Some(s.path)),
-                Err(e) => {
-                    self.report(format!("Could not save the screenshot {name}: {e:#}"));
-                    self.show_window(ctx);
-                }
+            self.screenshot_saved(s);
+        }
+    }
+
+    /// A picture written, or not.
+    fn screenshot_saved(&mut self, s: Saved) {
+        self.capture.pending.retain(|p| *p != s.path);
+        self.file_written(&s.path, s.result.is_err());
+        let name = s.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let aside = s.aside.map(|a| format!(" ({a})")).unwrap_or_default();
+        match s.result {
+            Ok(()) if s.copied => self.notify(format!("Copied, and saved as {name}{aside}"), Some(s.path)),
+            Ok(()) => self.notify(format!("Saved {name}{aside}"), Some(s.path)),
+            Err(e) => {
+                self.report(format!("Could not save the screenshot {name}: {e:#}"));
+                self.show_window(&self.ctx.clone());
             }
+        }
+    }
+
+    /// When the app quits: stops a screen recording and waits (a little)
+    /// for its file and for screenshots still being written, so none is
+    /// left half done or linked from the notes without its file.
+    pub(super) fn finish_captures(&mut self) {
+        self.finish_recording();
+        let deadline = Instant::now() + SAVE_WAIT;
+        while self.capture.pending.iter().any(|p| !self.recording_to(p))
+            && let Ok(s) = self.capture.saved.1.recv_deadline(deadline)
+        {
+            self.screenshot_saved(s);
         }
     }
 
@@ -238,14 +284,21 @@ impl App {
             // Still taking: the focus goes back once it is done.
             Finish::Scroll(area) => return self.start_scrolling(area, when),
             Finish::Record(area) => {
-                self.end_screenshot(ctx);
+                // A window hidden for the picture stays hidden until the
+                // recording ends, out of the video.
+                let hidden = self.capture.taking.as_ref().is_some_and(|t| t.show_window_after);
+                if hidden {
+                    self.capture.taking = None;
+                } else {
+                    self.end_screenshot(ctx);
+                }
                 // Named for when it starts, not when the overlay came up.
                 let when = When {
                     taken: chrono::Local::now().naive_local(),
                     clock: self.recording().then(|| self.recorded_seconds()),
                     into_notes,
                 };
-                return self.start_recording(area, when);
+                return self.start_recording(area, when, hidden);
             }
             Finish::Cancel => return self.end_screenshot(ctx),
             Finish::Pin { picture, at, scale } => {
@@ -358,11 +411,37 @@ impl App {
             self.report(format!("Could not save the screenshot: {e}"));
             return;
         }
-        self.capture.pending.push(path);
         if let Some(note) = note {
-            self.open.meeting.notes = files::append_line(&self.open.meeting.notes, &note);
-            self.mark_edited();
-            self.save_open();
+            self.link_in_notes(&path, note);
+        }
+        self.capture.pending.push(path);
+    }
+
+    /// Adds `line`, which links `file` (still being written), to the open
+    /// meeting's notes.
+    pub(super) fn link_in_notes(&mut self, file: &Path, line: String) {
+        self.open.meeting.notes = files::append_line(&self.open.meeting.notes, &line);
+        self.mark_edited();
+        self.save_open();
+        // After saving, which renames the file to a new title.
+        if let Some(meeting) = self.open.path.clone() {
+            self.capture.lines.push(NoteLine {
+                file: file.to_path_buf(),
+                meeting,
+                line,
+            });
+        }
+    }
+
+    /// `file` is written, or with `failed` is not: then its line goes from
+    /// the notes again, the open meeting's or its file's.
+    pub(super) fn file_written(&mut self, file: &Path, failed: bool) {
+        let Some(i) = self.capture.lines.iter().position(|l| l.file == file) else {
+            return;
+        };
+        let line = self.capture.lines.remove(i);
+        if failed {
+            self.unlink_note(&line.meeting, &line.line);
         }
     }
 

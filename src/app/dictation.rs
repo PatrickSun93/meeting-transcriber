@@ -100,7 +100,7 @@ impl DictationState {
         let dictation = Dictation::start(config.clone(), wake);
         // Both would paste every dictation. voice2cursor is looked for by
         // the watcher, which pauses dictation when it finds it.
-        let lock = crate::models::app_support_dir().join("dictation.lock");
+        let lock = lock_path();
         let mut claim = dictation::claim(&lock);
         // Restarted by the copy before (to use CUDA): it is quitting, and
         // lets go of the lock in a moment.
@@ -173,6 +173,11 @@ pub(super) fn describe(status: &Status, hotkey: &str) -> String {
     }
 }
 
+/// Dictation's single-copy lock.
+fn lock_path() -> std::path::PathBuf {
+    crate::models::app_support_dir().join("dictation.lock")
+}
+
 fn tray_icon(phase: Phase) -> TrayIcon {
     match phase {
         Phase::Loading => TrayIcon::Loading,
@@ -226,16 +231,24 @@ impl App {
             self.dict.resume_wanted = false;
             return;
         }
-        if matches!(self.dict.claim, Claim::Taken) {
-            self.dict.claim = dictation::claim(&crate::models::app_support_dir().join("dictation.lock"));
-            if matches!(self.dict.claim, Claim::Taken) {
-                self.dict.other_copy_banner = true;
-                return;
-            }
-            self.dict.other_copy_banner = false;
+        if !self.holds_claim() {
+            self.dict.other_copy_banner = true;
+            return;
         }
+        self.dict.other_copy_banner = false;
         self.dict.resume_wanted = true;
         let _ = self.dict.voice2cursor_ask.try_send(());
+    }
+
+    /// Whether this copy of the app holds dictation's lock, looking again
+    /// while another holds it (it may have quit since). Only that copy
+    /// dictates and answers the screenshot hotkey, so two copies never
+    /// both do.
+    fn holds_claim(&mut self) -> bool {
+        if matches!(self.dict.claim, Claim::Taken) {
+            self.dict.claim = dictation::claim(&lock_path());
+        }
+        !matches!(self.dict.claim, Claim::Taken)
     }
 
     /// Pauses dictation when voice2cursor starts, and finishes a resume.
@@ -273,6 +286,7 @@ impl App {
         if let Some(at) = self.dict.quit_at {
             if at.elapsed() > QUIT_GRACE {
                 // The window did not close (it may be hidden): save and go.
+                self.finish_captures();
                 self.stop_session();
                 self.finish_pending();
                 std::process::exit(0);
@@ -311,7 +325,11 @@ impl App {
                     KeysFor::Dictation => self.dict.settings.hotkey = key.name(),
                     KeysFor::Screenshot => self.capture.settings.hotkey = key.name(),
                 },
-                KeyEvent::Pressed(Press::Screenshot) => self.start_screenshot(Trigger::Hotkey),
+                KeyEvent::Pressed(Press::Screenshot) => {
+                    if self.holds_claim() {
+                        self.start_screenshot(Trigger::Hotkey);
+                    }
+                }
                 KeyEvent::Stopped => {
                     self.dict.hotkey = None;
                     self.dict.hotkey_error = Some(

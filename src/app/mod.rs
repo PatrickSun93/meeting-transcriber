@@ -946,7 +946,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
-        self.finish_recording();
+        self.finish_captures();
         self.stop_session();
         self.finish_pending();
     }

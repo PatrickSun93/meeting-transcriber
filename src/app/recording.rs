@@ -52,8 +52,8 @@ enum Update {
 pub(super) struct Recording {
     area: Area,
     path: PathBuf,
-    /// The line it added to the open meeting's notes, and that meeting's file.
-    note: Option<(PathBuf, String)>,
+    /// The window was hidden for the screenshot, and comes back once done.
+    show_window_after: bool,
     stop: Arc<AtomicBool>,
     updates: Receiver<Update>,
     /// When it started recording, once it has.
@@ -73,12 +73,15 @@ pub(super) struct Finished {
 
 impl App {
     /// Starts recording `area`, on a thread, into the open meeting's folder
-    /// (with a line in its notes) or the Recordings folder.
-    pub(super) fn start_recording(&mut self, area: Area, when: When) {
+    /// (with a line in its notes) or the Recordings folder. With
+    /// `show_window_after`, the window (hidden for the screenshot) comes
+    /// back once it is done.
+    pub(super) fn start_recording(&mut self, area: Area, when: When, show_window_after: bool) {
         let (path, note) = match self.capture_place(when, Kind::Recording) {
             Ok(place) => place,
             Err(e) => {
                 self.report(format!("Could not record the screen: {e:#}"));
+                self.show_window(&self.ctx.clone());
                 return;
             }
         };
@@ -104,20 +107,17 @@ impl App {
             });
         if let Err(e) = spawned {
             self.report(format!("Could not record the screen: {e}"));
+            self.show_window(&self.ctx.clone());
             return;
         }
         self.capture.pending.push(path.clone());
-        let note = note.and_then(|line| {
-            let meeting = self.open.path.clone()?;
-            self.open.meeting.notes = crate::capture::files::append_line(&self.open.meeting.notes, &line);
-            self.mark_edited();
-            self.save_open();
-            Some((meeting, line))
-        });
+        if let Some(line) = note {
+            self.link_in_notes(&path, line);
+        }
         self.capture.recording = Some(Recording {
             area,
             path,
-            note,
+            show_window_after,
             stop,
             updates: rx,
             started: None,
@@ -137,6 +137,11 @@ impl App {
     /// Whether the screen is being recorded (or its file finished).
     pub(super) fn recording_screen(&self) -> bool {
         self.capture.recording.is_some()
+    }
+
+    /// Whether `path` is the file the screen is being recorded into.
+    pub(super) fn recording_to(&self, path: &Path) -> bool {
+        self.capture.recording.as_ref().is_some_and(|r| r.path == path)
     }
 
     /// Takes in the thread's news, and the file once it is done.
@@ -161,6 +166,10 @@ impl App {
             return;
         };
         self.capture.pending.retain(|p| *p != recording.path);
+        // A failed recording may still have kept what came before it;
+        // without that, its line in the notes leads nowhere.
+        let kept = std::fs::metadata(&recording.path).is_ok_and(|m| m.len() > 0);
+        self.file_written(&recording.path, result.is_err() && !kept);
         let name = file_name(&recording.path);
         match result {
             Ok((recorded, sound)) => {
@@ -171,17 +180,11 @@ impl App {
                     seconds: recorded.seconds,
                     sound,
                 });
+                if recording.show_window_after {
+                    self.show_window(ctx);
+                }
             }
             Err(e) => {
-                // Its line in the notes leads nowhere without the file.
-                if let Some((meeting, line)) = &recording.note
-                    && self.open.path.as_ref() == Some(meeting)
-                    && !recording.path.exists()
-                {
-                    self.open.meeting.notes = crate::capture::files::remove_line(&self.open.meeting.notes, line);
-                    self.mark_edited();
-                    self.save_open();
-                }
                 self.report(format!("The screen recording {name} failed: {e:#}"));
                 self.show_window(ctx);
             }
@@ -195,10 +198,15 @@ impl App {
         };
         recording.stop.store(true, Ordering::Relaxed);
         let deadline = Instant::now() + EXIT_WAIT;
+        let mut done = None;
         while let Ok(update) = recording.updates.recv_deadline(deadline) {
-            if matches!(update, Update::Done(_)) {
+            if let Update::Done(result) = update {
+                done = Some(result);
                 break;
             }
+        }
+        if let Some(result) = done {
+            self.recording_done(&self.ctx.clone(), result);
         }
     }
 
@@ -232,7 +240,7 @@ impl App {
                 *ready = raise_overlay(TITLE, false) && hide_from_captures(TITLE);
             }
             if placing {
-                keep_at(ui.ctx(), origin, None);
+                keep_at(ui.ctx(), origin, None, scale);
             }
             control(ui, started, stopping)
         });

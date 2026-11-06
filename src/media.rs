@@ -12,6 +12,7 @@ use symphonia::core::formats::{FormatOptions, FormatReader, Track};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
 
 use crate::audio::dsp::{Resampler, SAMPLE_RATE, interleaved_to_mono};
 
@@ -28,20 +29,51 @@ pub fn is_media(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// The sound of `path` as 16 kHz mono: every audio track, mixed (a
-/// screen recording on the Mac has the computer's sound and the
-/// microphone on tracks of their own). `progress` gets the seconds read so
-/// far; `cancel` stops early with an error.
-pub fn decode(path: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<Vec<f32>> {
+/// A track that starts later than this is placed this far in: its time
+/// stamp is more likely wrong than true.
+const MAX_LEAD_SECONDS: f64 = 60.0;
+
+/// Which of a file's audio tracks are heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tracks {
+    /// The first: other files' other tracks are mostly other versions of
+    /// it (another language, the parts of a mix).
+    First,
+    /// All of them, mixed on one timeline: this app's screen recordings on
+    /// the Mac have the computer's sound and the microphone on tracks of
+    /// their own.
+    All,
+}
+
+impl Tracks {
+    /// All of them for a file in the meetings folder `meetings_dir`, where
+    /// this app keeps its screen recordings; the first for any other.
+    pub fn for_file(path: &Path, meetings_dir: &Path) -> Tracks {
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        if real(path).starts_with(real(meetings_dir)) {
+            Tracks::All
+        } else {
+            Tracks::First
+        }
+    }
+}
+
+/// The sound of `path` as 16 kHz mono, of its first audio track or all
+/// of them (`tracks`). `progress` gets the seconds read so far; `cancel`
+/// stops early with an error.
+pub fn decode(path: &Path, tracks: Tracks, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<Vec<f32>> {
+    let mixed = tracks == Tracks::All;
     let mut format = open(path)?;
     let mut tracks = Vec::new();
     let mut unreadable = None;
-    for track in format.tracks().iter().filter(|t| is_sound(t)) {
+    let wanted = if mixed { usize::MAX } else { 1 };
+    for track in format.tracks().iter().filter(|t| is_sound(t)).take(wanted) {
         match symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()) {
             Ok(decoder) => tracks.push(Sound {
                 id: track.id,
                 decoder,
                 resampler: Resampler::new(track.codec_params.sample_rate.unwrap_or(SAMPLE_RATE)),
+                time_base: track.codec_params.time_base,
                 buffer: None,
                 out: Vec::new(),
             }),
@@ -88,6 +120,10 @@ pub fn decode(path: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -
         };
         samples.copy_interleaved_ref(decoded);
         let mono = interleaved_to_mono(samples.samples(), spec.channels.count());
+        if mixed && track.out.is_empty() {
+            // A track that starts later is placed where it starts.
+            track.out.resize(lead(track.time_base, packet.ts()), 0.0);
+        }
         track.out.extend(track.resampler.process(&mono));
         progress(track.out.len() as f32 / SAMPLE_RATE as f32);
     }
@@ -109,6 +145,8 @@ struct Sound {
     id: u32,
     decoder: Box<dyn symphonia::core::codecs::Decoder>,
     resampler: Resampler,
+    /// What its packets' time stamps count.
+    time_base: Option<TimeBase>,
     buffer: Option<SampleBuffer<f32>>,
     /// What it has given so far, at 16 kHz.
     out: Vec<f32>,
@@ -130,6 +168,17 @@ fn open(path: &Path) -> Result<Box<dyn FormatReader>> {
 /// Whether a track is sound: a video's first track is usually the picture.
 fn is_sound(track: &Track) -> bool {
     track.codec_params.codec != CODEC_TYPE_NULL && track.codec_params.sample_rate.is_some()
+}
+
+/// How many samples (at 16 kHz) into the file the time stamp `ts` is, up
+/// to `MAX_LEAD_SECONDS`; none without a time base.
+fn lead(time_base: Option<TimeBase>, ts: u64) -> usize {
+    let Some(base) = time_base.filter(|b| b.numer > 0 && b.denom > 0) else {
+        return 0;
+    };
+    let time = base.calc_time(ts);
+    let seconds = (time.seconds as f64 + time.frac).min(MAX_LEAD_SECONDS);
+    (seconds * f64::from(SAMPLE_RATE)) as usize
 }
 
 /// Two tracks of the same timeline played together: added up, in range.
@@ -173,7 +222,7 @@ mod tests {
             w.write_sample(v).unwrap();
         }
         w.finalize().unwrap();
-        let samples = decode(&path, &AtomicBool::new(false), |_| {}).unwrap();
+        let samples = decode(&path, Tracks::First, &AtomicBool::new(false), |_| {}).unwrap();
         // One second, give or take the resampler's edge.
         assert!((15_900..=16_100).contains(&samples.len()), "{}", samples.len());
         assert!(samples.iter().any(|s| s.abs() > 0.1));
@@ -186,6 +235,26 @@ mod tests {
     fn tracks_are_mixed_on_one_timeline() {
         assert_eq!(mix(vec![0.5, 0.75], vec![0.25, 0.5, -0.5]), vec![0.75, 1.0, -0.5]);
         assert_eq!(mix(vec![0.1, 0.2, 0.3], vec![-0.1]), vec![0.0, 0.2, 0.3]);
+        // A track starting half a second in, stamped in 48 kHz samples.
+        assert_eq!(lead(Some(TimeBase::new(1, 48_000)), 24_000), 8_000);
+        assert_eq!(lead(Some(TimeBase::new(1, 1000)), 0), 0);
+        assert_eq!(lead(Some(TimeBase::new(1, 1)), 1 << 40), 60 * 16_000);
+        assert_eq!(lead(None, 24_000), 0);
+    }
+
+    #[test]
+    fn only_the_apps_own_recordings_mix_their_tracks() {
+        let meetings = Path::new("/notes/Meetings");
+        let own = meetings.join("2026-11-05 14-05 Sync files/Recording 12-03.mp4");
+        assert_eq!(Tracks::for_file(&own, meetings), Tracks::All);
+        assert_eq!(
+            Tracks::for_file(&meetings.join("Recordings/Recording 1.mp4"), meetings),
+            Tracks::All
+        );
+        assert_eq!(
+            Tracks::for_file(Path::new("/Downloads/obs.mkv"), meetings),
+            Tracks::First
+        );
     }
 
     #[test]
@@ -194,7 +263,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("fake.mp4");
         std::fs::write(&path, b"not a video").unwrap();
-        let err = decode(&path, &AtomicBool::new(false), |_| {}).unwrap_err();
+        let err = decode(&path, Tracks::First, &AtomicBool::new(false), |_| {}).unwrap_err();
         assert!(format!("{err:#}").contains("not an audio or video file"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
     }

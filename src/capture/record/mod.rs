@@ -114,6 +114,14 @@ pub fn video_size(width: u32, height: u32) -> [u32; 2] {
     [even(width), even(height)]
 }
 
+/// Whether a video of `size` (from `video_size`) is the area of `source`
+/// pixels scaled down, rather than the area with an odd last column or
+/// row left off.
+#[cfg(any(windows, test))]
+pub fn scaled_down(source: [u32; 2], size: [u32; 2]) -> bool {
+    source[0] > size[0] + 1 || source[1] > size[1] + 1
+}
+
 /// How many bits a second the video is encoded at: enough for sharp text
 /// on a screen, about 5 Mbit/s at 1080p.
 #[cfg(any(windows, test))]
@@ -186,6 +194,16 @@ mod tests {
         for (w, h) in [(33, 999), (4097, 33), (6016, 3384)] {
             let [vw, vh] = video_size(w, h);
             assert!(vw % 2 == 0 && vh % 2 == 0 && vw.max(vh) <= 3840 && vw.min(vh) <= 2160);
+        }
+    }
+
+    #[test]
+    fn only_a_video_smaller_than_the_area_is_scaled() {
+        for (w, h) in [(1920, 1080), (1001, 601), (3841, 1081)] {
+            assert!(!scaled_down([w, h], video_size(w, h)), "{w}x{h}");
+        }
+        for (w, h) in [(5120, 2880), (3841, 2161), (7680, 1080)] {
+            assert!(scaled_down([w, h], video_size(w, h)), "{w}x{h}");
         }
     }
 
