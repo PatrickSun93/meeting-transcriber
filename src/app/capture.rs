@@ -1,8 +1,10 @@
 //! Screenshots in the window: taking one (the hotkey, the Screenshot
 //! buttons, the menu bar or tray item), the overlay while choosing what to
-//! keep (`overlay.rs`) or a scrolling screenshot of it (`scrolling.rs`),
-//! then saving it: beside the open meeting with a line in its notes, or in
-//! the Screenshots folder; and the Screenshots card in Settings.
+//! keep and drawing on it (`overlay.rs`, `drawing.rs`) or a scrolling
+//! screenshot of it (`scrolling.rs`), then saving it: beside the open
+//! meeting with a line in its notes, or in the Screenshots folder; or
+//! pinning it to the screen (`pins.rs`); and the Screenshots card in
+//! Settings.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,12 +14,15 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, RichText, Ui};
 
 use super::dictation::KeysFor;
-use super::overlay::{Finish, Overlay};
+use super::overlay::{Finish, Overlay, Picture};
+use super::pins::Pins;
 use super::scrolling::Scrolling;
 use super::thumbnails::Thumbnails;
 use super::{App, platform, theme};
+use crate::capture::annotate::Shape;
 use crate::capture::files::{self, Moment};
 use crate::capture::image::Image;
+use crate::capture::raster::{self, Fonts};
 use crate::capture::{self, Shot};
 use crate::settings::CaptureSettings;
 
@@ -71,6 +76,11 @@ pub(super) struct CaptureState {
     /// Pictures being written, so a second one does not take the same name.
     pending: Vec<PathBuf>,
     pub thumbnails: Thumbnails,
+    pub pins: Pins,
+    /// What text drawn on screenshots is drawn in, once some is.
+    fonts: Option<Fonts>,
+    /// How many of the system's fallback fonts have been read into them.
+    fallbacks_read: usize,
 }
 
 impl CaptureState {
@@ -84,6 +94,9 @@ impl CaptureState {
             saved: crossbeam_channel::unbounded(),
             pending: Vec::new(),
             thumbnails: Thumbnails::default(),
+            pins: Pins::default(),
+            fonts: None,
+            fallbacks_read: 0,
         }
     }
 }
@@ -155,6 +168,7 @@ impl App {
             }
         }
         self.scrolling_logic(ctx);
+        self.pins_logic(ctx);
         if self.capture.overlay.is_some() || self.capture.scrolling.is_some() {
             // The overlay and the scrolling windows are drawn by the
             // window's frame, which a hidden window would skip.
@@ -181,9 +195,10 @@ impl App {
         }
     }
 
-    /// The overlay's window while it is up, and the scrolling screenshot's.
-    /// Called from the window's frame.
+    /// The overlay's window while it is up, the scrolling screenshot's,
+    /// and the pins'. Called from the window's frame.
     pub(super) fn capture_overlay(&mut self, ctx: &egui::Context) {
+        self.pin_windows(ctx);
         self.scrolling_windows(ctx);
         let Some(overlay) = self.capture.overlay.as_mut() else {
             return;
@@ -203,15 +218,50 @@ impl App {
             clock,
             into_notes,
         };
-        let (image, copy) = match finish {
+        let (picture, copy) = match finish {
             // Still taking: the focus goes back once it is done.
             Finish::Scroll(area) => return self.start_scrolling(area, when),
             Finish::Cancel => return self.end_screenshot(ctx),
-            Finish::Copy(image) => (image, true),
-            Finish::Save(image) => (image, false),
+            Finish::Pin { picture, at, scale } => {
+                self.end_screenshot(ctx);
+                let image = self.flatten(picture);
+                return self.pin_screenshot(image, at, scale, when);
+            }
+            Finish::Copy(picture) => (picture, true),
+            Finish::Save(picture) => (picture, false),
         };
         self.end_screenshot(ctx);
+        let image = self.flatten(picture);
         self.keep_screenshot(image, when, copy, None);
+    }
+
+    /// The picture with what was drawn on it, drawn into its pixels.
+    fn flatten(&mut self, picture: Picture) -> Image {
+        if picture.marks.is_empty() {
+            return picture.image;
+        }
+        let texts: Vec<&str> = picture
+            .marks
+            .iter()
+            .filter_map(|m| match &m.shape {
+                Shape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let capture = &mut self.capture;
+        let fonts = capture.fonts.get_or_insert_with(Fonts::builtin);
+        // The system's fonts for other scripts, as the window has them,
+        // read only once a text needs them.
+        if !texts.iter().all(|t| fonts.covers(t)) {
+            let paths = theme::fallback_font_paths();
+            while capture.fallbacks_read < paths.len() && !texts.iter().all(|t| fonts.covers(t)) {
+                if let Ok(bytes) = std::fs::read(&paths[capture.fallbacks_read]) {
+                    fonts.add(bytes);
+                }
+                capture.fallbacks_read += 1;
+            }
+        }
+        raster::render(&picture.image, &picture.marks, fonts)
     }
 
     /// Hands the focus back, and the window if it was hidden for the picture.
@@ -294,8 +344,9 @@ impl App {
         theme::card_title(ui, "Screenshots");
         ui.weak(
             "Press the hotkey in any app (or use Screenshot in the sidebar or the menu), then drag over what to \
-             keep, or click a window. Enter copies it, and it is saved either way: beside the open meeting, with \
-             a line in its notes, or in the Screenshots folder of the meetings folder.",
+             keep, or click a window. Draw on it with the tools beside it, or Pin it to keep it on the screen. \
+             Enter copies it, and it is saved either way: beside the open meeting, with a line in its notes, or \
+             in the Screenshots folder of the meetings folder.",
         );
         if let Some(why) = capture::unsupported() {
             ui.colored_label(ui.visuals().warn_fg_color, why);

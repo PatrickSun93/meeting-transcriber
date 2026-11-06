@@ -1,7 +1,7 @@
 //! The pictures a meeting's notes link (`![…](…)`, as screenshots are
 //! added), shown small above the notes. Each is read and shrunk on a thread
 //! of its own, and kept as a texture while the notes still link it; a click
-//! opens it in the system's viewer.
+//! opens it in the system's viewer, and its menu pins it to the screen.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,8 +45,9 @@ impl Default for Thumbnails {
 
 impl Thumbnails {
     /// Shows the PNG pictures `notes` link, relative to `dir` (the meeting
-    /// file's folder). Nothing when there are none.
-    pub fn show(&mut self, ui: &mut Ui, dir: &Path, notes: &str) {
+    /// file's folder). Nothing when there are none. Returns the picture
+    /// to pin, when that was asked for.
+    pub fn show(&mut self, ui: &mut Ui, dir: &Path, notes: &str) -> Option<PathBuf> {
         for (path, image) in self.loaded.1.try_iter() {
             let thumb = match image {
                 Some(image) => Thumb::Ready(ui.ctx().load_texture(
@@ -74,8 +75,9 @@ impl Thumbnails {
         // Textures of pictures no longer linked are let go.
         self.cache.retain(|p, _| paths.contains(p));
         if paths.is_empty() {
-            return;
+            return None;
         }
+        let mut pin = None;
         ui.horizontal_wrapped(|ui| {
             for path in &paths {
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -93,14 +95,21 @@ impl Thumbnails {
                         let image = egui::Image::new((texture.id(), size * scale))
                             .corner_radius(4)
                             .sense(Sense::click());
-                        if ui
+                        let response = ui
                             .add(image)
-                            .on_hover_text(format!("{name}: click to open"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                            .on_hover_text(format!("{name}: click to open, right-click to pin it to the screen"))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        if response.clicked() {
                             platform::open_file(path);
                         }
+                        response.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                platform::open_file(path);
+                            }
+                            if ui.button("Pin to screen").clicked() {
+                                pin = Some(path.clone());
+                            }
+                        });
                     }
                     Thumb::Unreadable => {
                         ui.add_sized(vec2(HEIGHT, HEIGHT), egui::Label::new("?"))
@@ -110,6 +119,7 @@ impl Thumbnails {
             }
         });
         ui.add_space(6.0);
+        pin
     }
 }
 

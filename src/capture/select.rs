@@ -53,6 +53,11 @@ impl Mapping {
         )
     }
 
+    /// Pixels per point, down: what a size in points is in pixels.
+    pub fn pixels_per_point(&self) -> f32 {
+        self.scale().y
+    }
+
     /// The pixel position under a point.
     pub fn to_pixel(&self, point: Pos2) -> Pos2 {
         let s = self.scale();
@@ -72,6 +77,12 @@ impl Mapping {
             self.width,
             self.height,
         )
+    }
+
+    /// Where a pixel position lies on the overlay.
+    pub fn to_point(&self, pixel: Pos2) -> Pos2 {
+        let s = self.scale();
+        self.screen.min + vec2(pixel.x / s.x, pixel.y / s.y)
     }
 
     /// Where pixels lie on the overlay.
@@ -232,6 +243,8 @@ mod tests {
     fn points_and_pixels() {
         let m = retina();
         assert_eq!(m.to_pixel(pos2(10.0, 20.5)), pos2(20.0, 41.0));
+        assert_eq!(m.to_point(pos2(20.0, 41.0)), pos2(10.0, 20.5));
+        assert_eq!(m.pixels_per_point(), 2.0);
         let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(110.25, 70.0));
         let px = m.to_pixels(rect).unwrap();
         assert_eq!(

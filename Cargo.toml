@@ -17,9 +17,15 @@ crossbeam-channel = "0.5"
 dirs = "7"
 eframe = "0.37"
 hound = "3"
+# Text drawn on screenshots (src/capture/raster.rs), in egui's own fonts.
+# Pure Rust, and the font reader egui's fonts used before.
+ab_glyph = "0.2"
 # Screenshots are saved as PNG, and the notes show them (src/capture/image.rs).
 # Pure Rust, and already built for egui's fonts and arboard.
 png = "0.18"
+# Lines, outlines and arrows drawn on screenshots (src/capture/raster.rs).
+# Pure Rust; without png-format, which would build a second png.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 # win-system-proxy: on Windows, use the proxy set in the system's internet
 # settings (as a VPN or proxy app sets it), the one browsers use.
 ureq = { version = "3", features = ["win-system-proxy"] }

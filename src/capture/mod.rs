@@ -4,11 +4,15 @@
 //! pictures and PNG files (`image.rs`), the selection's geometry
 //! (`select.rs`), and where screenshots are saved and how notes link them
 //! (`files.rs`). A scrolling screenshot takes an area again and again as it
-//! scrolls (`scrolling.rs`) and stitches the pictures (`stitch.rs`). The
-//! overlay that shows a screenshot is the window's (`app/overlay.rs`).
+//! scrolls (`scrolling.rs`) and stitches the pictures (`stitch.rs`). What
+//! is drawn on a screenshot is `annotate.rs`, and drawn onto its pixels by
+//! `raster.rs`. The overlay that shows a screenshot is the window's
+//! (`app/overlay.rs`).
 
+pub mod annotate;
 pub mod files;
 pub mod image;
+pub mod raster;
 pub mod scrolling;
 pub mod select;
 pub mod stitch;

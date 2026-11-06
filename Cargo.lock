@@ -2165,6 +2165,7 @@ dependencies = [
 name = "meeting-transcriber"
 version = "0.2.2"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "arboard",
  "chrono",
@@ -2182,6 +2183,7 @@ dependencies = [
  "screencapturekit",
  "speakrs",
  "symphonia",
+ "tiny-skia",
  "ureq",
  "whisper-rs",
  "windows",

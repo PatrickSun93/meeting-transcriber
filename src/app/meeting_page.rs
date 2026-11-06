@@ -283,8 +283,10 @@ impl App {
             });
         });
         ui.add_space(4.0);
-        if let Some(dir) = self.open.path.as_deref().and_then(|p| p.parent()) {
-            self.capture.thumbnails.show(ui, dir, &self.open.meeting.notes);
+        if let Some(dir) = self.open.path.as_deref().and_then(|p| p.parent())
+            && let Some(pin) = self.capture.thumbnails.show(ui, dir, &self.open.meeting.notes)
+        {
+            self.pin_file(pin);
         }
         let height = ui.available_height();
         let view_id = self.open.view_id;

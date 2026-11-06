@@ -4,11 +4,13 @@
 mod capture;
 mod dictation;
 mod dictation_page;
+mod drawing;
 mod importing;
 mod library;
 mod meeting_page;
 mod overlay;
 mod path_prompt;
+mod pins;
 mod reader;
 mod scrolling;
 mod settings_page;

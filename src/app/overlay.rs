@@ -3,15 +3,18 @@
 //! to select (its size in pixels shows), drag the handles to change it or
 //! inside to move it; before that, the window under the mouse lights up
 //! and a click takes it (or the whole display). A toolbar beside the
-//! selection copies (Enter, or a double-click), saves, starts a scrolling
-//! screenshot of it, or cancels (Esc); right-click drops the selection, or
-//! cancels when there is none.
+//! selection has the drawing tools (`drawing.rs`), and copies (Enter, or a
+//! double-click), saves, pins it to the screen, starts a scrolling
+//! screenshot of it, or cancels (Esc); right-click puts the tool away,
+//! else drops the selection, or cancels when there is none.
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
     ViewportBuilder, ViewportCommand, ViewportId, pos2, vec2,
 };
 
+use super::drawing::Drawing;
+use crate::capture::annotate::Mark;
 use crate::capture::image::Image;
 use crate::capture::scrolling::{self, Area};
 use crate::capture::select::{self, Handle, Mapping};
@@ -32,11 +35,25 @@ const GAP: f32 = 8.0;
 /// For how many frames the window's place is checked and set right.
 const PLACE_FRAMES: u32 = 30;
 
+/// What was chosen: the pixels, and what was drawn on them (in their
+/// pixels), to be drawn onto them.
+pub(super) struct Picture {
+    pub image: Image,
+    pub marks: Vec<Mark>,
+}
+
 /// How the overlay was closed.
 pub(super) enum Finish {
     /// Put on the clipboard, and saved.
-    Copy(Image),
-    Save(Image),
+    Copy(Picture),
+    Save(Picture),
+    /// Shown above the other windows, where it was on the desktop: its
+    /// top-left corner in the desktop's pixels, and the display's scale.
+    Pin {
+        picture: Picture,
+        at: [i32; 2],
+        scale: f32,
+    },
     /// A scrolling screenshot of the area, from now on.
     Scroll(Area),
     Cancel,
@@ -47,18 +64,20 @@ pub(super) enum Finish {
 enum Tool {
     Cancel,
     Scroll,
+    Pin,
     Save,
     Copy,
 }
 
 impl Tool {
-    /// Left to right.
-    const TOOLBAR: [Tool; 4] = [Tool::Cancel, Tool::Scroll, Tool::Save, Tool::Copy];
+    /// Left to right, after the drawing tools.
+    const TOOLBAR: [Tool; 5] = [Tool::Cancel, Tool::Scroll, Tool::Pin, Tool::Save, Tool::Copy];
 
     fn label(self) -> &'static str {
         match self {
             Tool::Cancel => "Cancel",
             Tool::Scroll => "Scroll",
+            Tool::Pin => "Pin",
             Tool::Save => "Save",
             Tool::Copy => "Copy",
         }
@@ -68,6 +87,7 @@ impl Tool {
         match self {
             Tool::Cancel => "Esc",
             Tool::Scroll => "A long screenshot: the area scrolls down and its pictures are joined",
+            Tool::Pin => "Keep the picture on the screen, above other windows (not saved)",
             Tool::Save if cfg!(target_os = "macos") => "Save the picture, not on the clipboard (⌘S)",
             Tool::Save => "Save the picture, not on the clipboard (Ctrl+S)",
             Tool::Copy => "Copy to the clipboard and save (Enter, or double-click)",
@@ -87,6 +107,8 @@ enum Drag {
         start: Rect,
         from: Pos2,
     },
+    /// Drawing or moving a mark.
+    Drawing,
 }
 
 pub(super) struct Overlay {
@@ -95,6 +117,7 @@ pub(super) struct Overlay {
     /// In the overlay's points.
     selection: Option<Rect>,
     drag: Drag,
+    drawing: Drawing,
     /// The toolbar's size when last shown, to place it.
     toolbar: Vec2,
     frames: u32,
@@ -121,6 +144,7 @@ impl Overlay {
             texture,
             selection: None,
             drag: Drag::Idle,
+            drawing: Drawing::default(),
             toolbar: vec2(200.0, 36.0),
             frames: 0,
             raised: false,
@@ -179,18 +203,27 @@ impl Overlay {
             width: self.shot.image.width,
             height: self.shot.image.height,
         };
+        self.drawing.begin(&map);
         let response = ui.allocate_rect(screen, Sense::click_and_drag());
-        let (cancel, copy, save) = ui.input(|i| {
+        // While a text is typed, its keys are its own.
+        let typing = self.drawing.typing();
+        let (escape, closing, copy, save) = ui.input(|i| {
             (
-                i.key_pressed(Key::Escape) || i.viewport().close_requested(),
-                i.key_pressed(Key::Enter) || i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
-                i.modifiers.command && i.key_pressed(Key::S),
+                i.key_pressed(Key::Escape),
+                i.viewport().close_requested(),
+                !typing && (i.key_pressed(Key::Enter) || i.events.iter().any(|e| matches!(e, egui::Event::Copy))),
+                !typing && i.modifiers.command && i.key_pressed(Key::S),
             )
         });
-        if cancel {
+        if escape && typing {
+            self.drawing.cancel_text();
+        } else if escape || closing {
             return Some(Finish::Cancel);
         }
-        self.follow_drag(&response, ui, screen);
+        if self.selection.is_some() {
+            self.drawing.shortcuts(ui);
+        }
+        self.follow_drag(&response, ui, &map);
         let pointer = response.hover_pos();
         // Before anything is chosen, the window under the mouse.
         let hovered = match (self.selection, self.drag, pointer) {
@@ -200,14 +233,27 @@ impl Overlay {
             }
             _ => None,
         };
-        if response.clicked() && self.selection.is_none() {
-            self.selection = hovered.or(Some(screen));
+        if response.clicked() {
+            match (self.selection, pointer) {
+                (None, _) => self.selection = hovered.or(Some(screen)),
+                (Some(sel), Some(p)) => self.drawing.click(ui.painter(), map.to_pixel(p), sel.contains(p)),
+                (Some(_), None) => {}
+            }
         }
-        if response.secondary_clicked() && self.selection.take().is_none() {
-            return Some(Finish::Cancel);
+        if response.secondary_clicked() {
+            if self.drawing.kind.is_some() || self.drawing.typing() {
+                self.drawing.set_kind(None, ui.painter());
+            } else if self.drawing.marks.is_empty() && self.selection.take().is_none() {
+                return Some(Finish::Cancel);
+            }
         }
         let mut chosen = None;
-        if response.double_clicked() && self.selection.zip(pointer).is_some_and(|(s, p)| s.contains(p)) {
+        if response.double_clicked()
+            && self.drawing.kind.is_none()
+            && let Some((sel, p)) = self.selection.zip(pointer)
+            && sel.contains(p)
+            && !self.drawing.over_mark(map.to_pixel(p))
+        {
             chosen = Some(Tool::Copy);
         }
         if self.selection.is_some() {
@@ -219,10 +265,15 @@ impl Overlay {
         }
 
         self.paint(ui, screen, &map, hovered);
-        let scrollable = self
-            .selection
-            .and_then(|s| map.to_pixels(s))
-            .is_some_and(|px| px.height >= scrolling::MIN_HEIGHT);
+        if let Some(sel) = self.selection {
+            self.drawing.text_editor(ui, &map, sel);
+        }
+        // Scrolling takes new pictures, which have nothing drawn on them.
+        let scrollable = self.drawing.marks.is_empty()
+            && self
+                .selection
+                .and_then(|s| map.to_pixels(s))
+                .is_some_and(|px| px.height >= scrolling::MIN_HEIGHT);
         if let Some(sel) = self.selection
             && matches!(self.drag, Drag::Idle)
             && let Some(tool) = self.toolbar(&ctx, sel, screen, scrollable)
@@ -230,17 +281,30 @@ impl Overlay {
             chosen = Some(tool);
         }
         if response.hovered() || response.dragged() {
-            ctx.set_cursor_icon(self.cursor(pointer));
+            ctx.set_cursor_icon(self.cursor(pointer, &map));
+        }
+        let chosen = chosen?;
+        if matches!(chosen, Tool::Copy | Tool::Save | Tool::Pin) {
+            self.drawing.commit_text(ui.painter());
         }
         let pixels = self.selection.and_then(|s| map.to_pixels(s));
-        let picture = || pixels.map(|px| self.shot.image.crop(px));
-        match chosen? {
+        let picture = |px: select::PxRect| Picture {
+            image: self.shot.image.crop(px),
+            marks: self.drawing.marks.translated(vec2(-(px.x as f32), -(px.y as f32))),
+        };
+        let d = self.shot.display;
+        match chosen {
             Tool::Cancel => Some(Finish::Cancel),
-            Tool::Copy => picture().map(Finish::Copy),
-            Tool::Save => picture().map(Finish::Save),
+            Tool::Copy => pixels.map(picture).map(Finish::Copy),
+            Tool::Save => pixels.map(picture).map(Finish::Save),
+            Tool::Pin => pixels.map(|px| Finish::Pin {
+                picture: picture(px),
+                at: [d.origin_px[0] + px.x as i32, d.origin_px[1] + px.y as i32],
+                scale: d.scale,
+            }),
             Tool::Scroll => pixels.map(|rect| {
                 Finish::Scroll(Area {
-                    display: self.shot.display,
+                    display: d,
                     display_size: [self.shot.image.width, self.shot.image.height],
                     rect,
                 })
@@ -248,19 +312,24 @@ impl Overlay {
         }
     }
 
-    /// Draws a new selection, or changes the one there, as the pointer drags.
-    fn follow_drag(&mut self, response: &egui::Response, ui: &Ui, screen: Rect) {
+    /// Draws a new selection, or changes the one there, as the pointer
+    /// drags; or with a drawing tool (or on a mark), draws or moves a mark.
+    fn follow_drag(&mut self, response: &egui::Response, ui: &Ui, map: &Mapping) {
+        let screen = map.screen;
         if response.drag_started() {
             let from = ui
                 .input(|i| i.pointer.press_origin())
                 .or(response.interact_pointer_pos())
                 .unwrap_or(screen.min);
-            self.drag = match self
-                .selection
-                .and_then(|s| select::handle_at(s, from, REACH).map(|h| (s, h)))
-            {
-                Some((start, handle)) => Drag::Adjusting { handle, start, from },
-                None => Drag::Selecting(from),
+            self.drag = match self.selection {
+                Some(_) if self.drawing.takes(map.to_pixel(from)) => {
+                    self.drawing.press(ui.painter(), map.to_pixel(from));
+                    Drag::Drawing
+                }
+                Some(s) if let Some(handle) = select::handle_at(s, from, REACH) => {
+                    Drag::Adjusting { handle, start: s, from }
+                }
+                _ => Drag::Selecting(from),
             };
         }
         if response.dragged()
@@ -271,24 +340,35 @@ impl Overlay {
                 Drag::Adjusting { handle, start, from } => {
                     self.selection = Some(select::drag(start, handle, p - from, screen));
                 }
+                Drag::Drawing => {
+                    if let Some(sel) = self.selection {
+                        let bounds = Rect::from_min_max(map.to_pixel(sel.min), map.to_pixel(sel.max));
+                        self.drawing.drag_to(map.to_pixel(p), bounds);
+                    }
+                }
                 Drag::Idle => {}
             }
         }
         if response.drag_stopped() {
-            self.drag = Drag::Idle;
-            if self
+            if matches!(self.drag, Drag::Drawing) {
+                self.drawing.release();
+            } else if self
                 .selection
                 .is_some_and(|s| s.width() < MIN_SIZE || s.height() < MIN_SIZE)
             {
                 self.selection = None;
             }
+            self.drag = Drag::Idle;
         }
     }
 
-    fn paint(&self, ui: &Ui, screen: Rect, map: &Mapping, hovered: Option<Rect>) {
+    fn paint(&mut self, ui: &Ui, screen: Rect, map: &Mapping, hovered: Option<Rect>) {
         let painter = ui.painter();
         let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
         painter.image(self.texture.id(), screen, uv, Color32::WHITE);
+        if let Some(sel) = self.selection {
+            self.drawing.paint(&painter.with_clip_rect(sel), map, &self.shot.image);
+        }
         let lit = self.selection.or(hovered);
         match lit {
             Some(r) => {
@@ -319,10 +399,13 @@ impl Overlay {
             );
             return;
         };
-        for handle in Handle::DRAWN {
-            let square = Rect::from_center_size(handle.position(sel), Vec2::splat(2.0 * HANDLE));
-            painter.rect_filled(square, 1.0, Color32::WHITE);
-            painter.rect_stroke(square, 1.0, Stroke::new(1.0, OUTLINE), StrokeKind::Inside);
+        // With a drawing tool, drags draw: the handles are put away.
+        if self.drawing.kind.is_none() {
+            for handle in Handle::DRAWN {
+                let square = Rect::from_center_size(handle.position(sel), Vec2::splat(2.0 * HANDLE));
+                painter.rect_filled(square, 1.0, Color32::WHITE);
+                painter.rect_stroke(square, 1.0, Stroke::new(1.0, OUTLINE), StrokeKind::Inside);
+            }
         }
         if let Some(px) = map.to_pixels(sel) {
             let text = format!("{} × {}", px.width, px.height);
@@ -335,29 +418,42 @@ impl Overlay {
         }
     }
 
-    /// The toolbar beside the selection; the tool clicked, if one was.
-    /// Scroll is greyed out when the selection is too short to scroll.
+    /// The toolbar beside the selection: the drawing tools, then what to do
+    /// with the picture, and the colours and sizes while a tool is in use.
+    /// The tool clicked, if one was. Scroll is greyed out when the
+    /// selection is too short to scroll or has drawings on it.
     fn toolbar(&mut self, ctx: &egui::Context, sel: Rect, screen: Rect, scrollable: bool) -> Option<Tool> {
         let at = select::toolbar_origin(sel, self.toolbar, screen, GAP);
         let mut chosen = None;
+        let drawn = !self.drawing.marks.is_empty();
         let shown = egui::Area::new(egui::Id::unique("screenshot toolbar"))
             .order(Order::Foreground)
             .fixed_pos(at)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        self.drawing.tool_buttons(ui);
+                        ui.separator();
                         for tool in Tool::TOOLBAR {
                             let enabled = tool != Tool::Scroll || scrollable;
+                            let why = if drawn {
+                                "Scrolling takes new pictures: only without drawings"
+                            } else {
+                                "Select a taller area to scroll"
+                            };
                             if ui
                                 .add_enabled(enabled, egui::Button::new(tool.label()))
                                 .on_hover_text(tool.hint())
-                                .on_disabled_hover_text("Select a taller area to scroll")
+                                .on_disabled_hover_text(why)
                                 .clicked()
                             {
                                 chosen = Some(tool);
                             }
                         }
                     });
+                    if self.drawing.kind.is_some() {
+                        ui.horizontal(|ui| self.drawing.style_buttons(ui));
+                    }
                 })
             });
         self.toolbar = shown.response.rect.size();
@@ -365,10 +461,19 @@ impl Overlay {
     }
 
     /// The pointer for what a drag would do here.
-    fn cursor(&self, pointer: Option<Pos2>) -> CursorIcon {
+    fn cursor(&self, pointer: Option<Pos2>, map: &Mapping) -> CursorIcon {
+        let drawing = match self.drag {
+            Drag::Idle | Drag::Drawing if self.selection.is_some() => {
+                self.drawing.cursor(pointer.map(|p| map.to_pixel(p)))
+            }
+            _ => None,
+        };
+        if let Some(icon) = drawing {
+            return icon;
+        }
         let handle = match self.drag {
             Drag::Adjusting { handle, .. } => Some(handle),
-            Drag::Selecting(_) => None,
+            Drag::Selecting(_) | Drag::Drawing => None,
             Drag::Idle => self
                 .selection
                 .zip(pointer)
