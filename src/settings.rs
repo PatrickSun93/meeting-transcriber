@@ -32,17 +32,22 @@ pub struct Settings {
     pub capture: CaptureSettings,
 }
 
-/// Screenshots' choices.
+/// Screenshots' and screen recordings' choices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureSettings {
     /// A `Shortcut` name, pressed (not held) to take a screenshot.
     pub hotkey: String,
+    /// What screen recordings hear: the computer's sound, the microphone.
+    pub record_computer_sound: bool,
+    pub record_microphone: bool,
 }
 
 impl Default for CaptureSettings {
     fn default() -> Self {
         Self {
             hotkey: crate::capture::default_hotkey().name(),
+            record_computer_sound: true,
+            record_microphone: true,
         }
     }
 }
@@ -50,8 +55,20 @@ impl Default for CaptureSettings {
 impl CaptureSettings {
     /// Takes one `key=value` line of `settings.txt`, if it is screenshots'.
     fn parse_line(&mut self, key: &str, value: &str) {
-        if key == "capture_hotkey" {
-            self.hotkey = value.to_string();
+        let flag = value == "true";
+        match key {
+            "capture_hotkey" => self.hotkey = value.to_string(),
+            "record_computer_sound" => self.record_computer_sound = flag,
+            "record_microphone" => self.record_microphone = flag,
+            _ => {}
+        }
+    }
+
+    /// What a screen recording hears.
+    pub fn sound(&self) -> crate::capture::record::Sound {
+        crate::capture::record::Sound {
+            computer: self.record_computer_sound,
+            microphone: self.record_microphone,
         }
     }
 
@@ -273,7 +290,7 @@ impl Settings {
              dictation_sounds={}\ndictation_save_recordings={}\ndictation_recordings_dir={}\n\
              dictation_min_seconds={}\ndictation_max_seconds={}\n\
              ollama={}\ncleanup_api={}\nollama_url={}\nollama_model={}\nollama_timeout={}\ncleanup_api_key={}\n\
-             capture_hotkey={}\n",
+             capture_hotkey={}\nrecord_computer_sound={}\nrecord_microphone={}\n",
             self.model,
             self.language,
             self.capture_me,
@@ -300,6 +317,8 @@ impl Settings {
             d.ollama_timeout,
             line(&d.cleanup_api_key),
             self.capture.hotkey,
+            self.capture.record_computer_sound,
+            self.capture.record_microphone,
         )
     }
 
@@ -375,6 +394,8 @@ mod tests {
             },
             capture: CaptureSettings {
                 hotkey: "alt+shift+f13".into(),
+                record_computer_sound: false,
+                record_microphone: true,
             },
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
@@ -448,6 +469,15 @@ mod tests {
             crate::capture::default_hotkey()
         );
         assert!(Settings::default().to_text().contains("\ncapture_hotkey="));
+    }
+
+    #[test]
+    fn recordings_hear_both_until_told_otherwise() {
+        let s = Settings::default();
+        assert!(s.capture.record_computer_sound && s.capture.record_microphone);
+        let quiet = Settings::parse("record_computer_sound=false\nrecord_microphone=false");
+        assert!(!quiet.capture.sound().any());
+        assert_eq!(Settings::parse(&quiet.to_text()).capture, quiet.capture);
     }
 
     #[test]

@@ -61,8 +61,10 @@ cuda = ["whisper-rs/cuda"]
 [target.'cfg(target_os = "macos")'.dependencies]
 # System audio, and screenshots: macos_14_0 builds the screenshot API (it
 # needs the macOS 14 SDK to build); the app still runs on macOS 13, where
-# it is checked for before use.
-screencapturekit = { version = "11", features = ["macos_14_0"] }
+# it is checked for before use. macos_15_0: screen recording straight into
+# an MP4 file (SCRecordingOutput, and the microphone), checked for the same
+# way; it needs the macOS 15 SDK to build.
+screencapturekit = { version = "11", features = ["macos_15_0"] }
 whisper-rs = { version = "0.16", features = ["metal"] }
 # Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item and the
 # sounds (AppKit). Screenshots: the displays and their windows (Quartz), the
@@ -103,14 +105,16 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 
 # The Explorer folder dialog (COM); for dictation, the keyboard hook and
 # Ctrl+V, the tray icon, sounds and the startup entry; for screenshots, the
-# monitor (GDI, its DPI) and the windows on it (DWM). Already built for
-# cpal's WASAPI backend.
+# monitor (GDI, its DPI) and the windows on it (DWM); for screen recording,
+# Media Foundation's H.264 and AAC encoders and its MP4 writer, part of
+# Windows. Already built for cpal's WASAPI backend.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",

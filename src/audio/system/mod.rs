@@ -21,7 +21,7 @@ pub fn start_system_audio(tx: Sender<AudioPacket>) -> Result<Capture> {
 
 #[cfg(windows)]
 pub fn start_system_audio(tx: Sender<AudioPacket>) -> Result<Capture> {
-    super::mic::start(super::mic::Input::Loopback, tx)
+    super::mic::start(super::mic::Input::Loopback, super::dsp::SAMPLE_RATE, tx)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]

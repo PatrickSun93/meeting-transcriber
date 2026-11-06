@@ -256,6 +256,20 @@ pub struct TrayMenu {
     /// The latest dictations, newest first: time and text.
     pub recent: Vec<(String, String)>,
     pub paused: bool,
+    /// A screen recording is going on: the screenshot item stops it.
+    pub recording_screen: bool,
+}
+
+impl TrayMenu {
+    /// The screenshot item's text; while the screen is recorded, it stops
+    /// that (as the screenshot hotkey does).
+    pub fn screenshot_label(&self) -> &'static str {
+        if self.recording_screen {
+            "Stop screen recording"
+        } else {
+            "Take a screenshot"
+        }
+    }
 }
 
 /// What was chosen in the menu bar (or tray) item's menu.

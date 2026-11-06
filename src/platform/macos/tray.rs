@@ -1,6 +1,6 @@
 //! The menu bar item: an SF Symbol for dictation's state, and a menu with
-//! the latest dictations (click to copy), Take a screenshot, Pause, Open
-//! and Quit. AppKit
+//! the latest dictations (click to copy), Take a screenshot (or Stop the
+//! screen recording), Pause, Open and Quit. AppKit
 //! objects live on the main thread, so this is made and updated from the
 //! window's frame loop; the menu is rebuilt each time it opens.
 
@@ -97,7 +97,7 @@ impl Target {
             }
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
-        menu.addItem(&self.item(mtm, "Take a screenshot", Some(TAG_SCREENSHOT)));
+        menu.addItem(&self.item(mtm, model.screenshot_label(), Some(TAG_SCREENSHOT)));
         let pause = self.item(mtm, "Pause dictation", Some(TAG_PAUSE));
         pause.setState(if model.paused {
             NSControlStateValueOn

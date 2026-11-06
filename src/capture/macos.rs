@@ -38,7 +38,7 @@ use super::scrolling::Area;
 use super::select::PxRect;
 use super::{Display, Shot};
 
-const PERMISSION_HINT: &str = "Screenshots need the Screen Recording permission: allow Meeting Transcriber in \
+pub(super) const PERMISSION_HINT: &str = "Screenshots need the Screen Recording permission: allow Meeting Transcriber in \
      System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen it.";
 const ACCESSIBILITY_HINT: &str = "Scroll by hand: for the app to scroll, allow Meeting Transcriber in System \
      Settings > Privacy & Security > Accessibility (as for auto paste).";
@@ -60,7 +60,7 @@ pub fn allowed() -> bool {
 }
 
 /// Fails, asking for the permission, when the screen may not be read.
-fn check_allowed() -> Result<()> {
+pub(super) fn check_allowed() -> Result<()> {
     if !allowed() {
         // Adds the app to the list in System Settings, switched off.
         // SAFETY: a plain request about this process; it may show the
@@ -72,7 +72,7 @@ fn check_allowed() -> Result<()> {
 }
 
 /// The display that holds `point` (in Quartz's global points).
-fn display_at(point: CGPoint) -> Result<Option<u32>> {
+pub(super) fn display_at(point: CGPoint) -> Result<Option<u32>> {
     let ids = CGDisplay::active_displays().map_err(|e| anyhow!("could not list the displays (error {e})"))?;
     Ok(ids
         .iter()
@@ -145,7 +145,7 @@ fn screencapturekit_image(id: u32, width: u32, height: u32) -> Result<Image> {
 }
 
 /// What ScreenCaptureKit is to show: the display, without this app.
-fn kit_filter(id: u32) -> Result<SCContentFilter> {
+pub(super) fn kit_filter(id: u32) -> Result<SCContentFilter> {
     let content = SCShareableContent::get().map_err(|e| anyhow!("{PERMISSION_HINT} ({e})"))?;
     let display = content
         .displays()

@@ -66,6 +66,12 @@ Transcripts go to `Documents/Meeting Transcripts` unless changed in Settings
   A scrolling screenshot (Scroll on the overlay) that does not scroll by
   itself on the Mac lacks `accessibility`; its window then says to scroll
   by hand.
+- **Screen recordings** (Record on the overlay): `doctor`'s
+  `screen_recordings` says where they go and what they hear (settings
+  `record_computer_sound`, `record_microphone`), or why they can't be made
+  (Linux; a Mac before macOS 15). A failed one shows its reason in the
+  window; on Windows a sound source that would not start is in `log`
+  (`screen recording: without …`), and the video is made without it.
 
 ## Developing
 

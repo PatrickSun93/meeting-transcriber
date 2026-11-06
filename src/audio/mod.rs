@@ -14,6 +14,18 @@ pub use system::start_system_audio;
 
 use crate::transcript::Speaker;
 
+/// The microphone (as `Speaker::Me`) or the PC's sound (`Others`) as mono
+/// at `rate` frames per second: the sound of a screen recording on
+/// Windows. (The Mac's comes with the screen, through ScreenCaptureKit.)
+#[cfg(windows)]
+pub fn start_at(speaker: Speaker, rate: u32, tx: Sender<AudioPacket>) -> anyhow::Result<Capture> {
+    let input = match speaker {
+        Speaker::Me => mic::Input::Microphone,
+        Speaker::Others => mic::Input::Loopback,
+    };
+    mic::start(input, rate, tx)
+}
+
 pub struct AudioPacket {
     pub speaker: Speaker,
     pub samples: Vec<f32>,
@@ -45,10 +57,15 @@ struct Converter {
 
 impl Converter {
     fn new(speaker: Speaker, sample_rate: u32, channels: usize, tx: Sender<AudioPacket>) -> Self {
+        Self::to_rate(speaker, sample_rate, channels, dsp::SAMPLE_RATE, tx)
+    }
+
+    /// Mono at `out_rate` instead of 16 kHz.
+    fn to_rate(speaker: Speaker, sample_rate: u32, channels: usize, out_rate: u32, tx: Sender<AudioPacket>) -> Self {
         Self {
             speaker,
             channels,
-            resampler: dsp::Resampler::new(sample_rate),
+            resampler: dsp::Resampler::to(sample_rate, out_rate),
             tx,
         }
     }

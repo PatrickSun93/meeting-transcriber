@@ -363,6 +363,7 @@ mod tests {
             status: "Ready".into(),
             recent: vec![("09:00".into(), "hello".into())],
             paused: true,
+            recording_screen: false,
         };
         let (id, root, children) = layout(0, &menu);
         assert_eq!(id, 0);

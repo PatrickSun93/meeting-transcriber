@@ -1,10 +1,10 @@
 //! Screenshots in the window: taking one (the hotkey, the Screenshot
 //! buttons, the menu bar or tray item), the overlay while choosing what to
-//! keep and drawing on it (`overlay.rs`, `drawing.rs`) or a scrolling
-//! screenshot of it (`scrolling.rs`), then saving it: beside the open
-//! meeting with a line in its notes, or in the Screenshots folder; or
-//! pinning it to the screen (`pins.rs`); and the Screenshots card in
-//! Settings.
+//! keep and drawing on it (`overlay.rs`, `drawing.rs`), a scrolling
+//! screenshot of it (`scrolling.rs`) or a screen recording
+//! (`recording.rs`), then saving it: beside the open meeting with a line
+//! in its notes, or in the Screenshots folder; or pinning it to the screen
+//! (`pins.rs`); and the Screenshots card in Settings.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -16,11 +16,12 @@ use eframe::egui::{self, RichText, Ui};
 use super::dictation::KeysFor;
 use super::overlay::{Finish, Overlay, Picture};
 use super::pins::Pins;
+use super::recording::{Finished, Recording};
 use super::scrolling::Scrolling;
 use super::thumbnails::Thumbnails;
 use super::{App, platform, theme};
 use crate::capture::annotate::Shape;
-use crate::capture::files::{self, Moment};
+use crate::capture::files::{self, Kind, Moment};
 use crate::capture::image::Image;
 use crate::capture::raster::{self, Fonts};
 use crate::capture::{self, Shot};
@@ -72,9 +73,13 @@ pub(super) struct CaptureState {
     grabbing: Option<Receiver<Result<Shot>>>,
     overlay: Option<Overlay>,
     pub scrolling: Option<Scrolling>,
+    pub recording: Option<Recording>,
+    /// The last recording, until its banner is dismissed.
+    pub recorded: Option<Finished>,
     saved: (Sender<Saved>, Receiver<Saved>),
-    /// Pictures being written, so a second one does not take the same name.
-    pending: Vec<PathBuf>,
+    /// Pictures and videos being written, so a second one does not take
+    /// the same name.
+    pub pending: Vec<PathBuf>,
     pub thumbnails: Thumbnails,
     pub pins: Pins,
     /// What text drawn on screenshots is drawn in, once some is.
@@ -91,6 +96,8 @@ impl CaptureState {
             grabbing: None,
             overlay: None,
             scrolling: None,
+            recording: None,
+            recorded: None,
             saved: crossbeam_channel::unbounded(),
             pending: Vec::new(),
             thumbnails: Thumbnails::default(),
@@ -104,8 +111,12 @@ impl CaptureState {
 impl App {
     /// Takes a screenshot of the display under the mouse and shows the
     /// overlay to choose what to keep. One at a time: asked for during a
-    /// scrolling screenshot, it stops that one.
+    /// scrolling screenshot or a screen recording, it stops that one.
     pub(super) fn start_screenshot(&mut self, trigger: Trigger) {
+        if self.recording_screen() {
+            self.stop_recording();
+            return;
+        }
         if self.capture.taking.is_some() {
             self.stop_scrolling();
             return;
@@ -168,15 +179,19 @@ impl App {
             }
         }
         self.scrolling_logic(ctx);
+        self.recording_logic(ctx);
         self.pins_logic(ctx);
-        if self.capture.overlay.is_some() || self.capture.scrolling.is_some() {
-            // The overlay and the scrolling windows are drawn by the
-            // window's frame, which a hidden window would skip.
+        if self.capture.overlay.is_some() || self.capture.scrolling.is_some() || self.capture.recording.is_some() {
+            // The overlay, and the scrolling and recording windows, are
+            // drawn by the window's frame, which a hidden window would skip.
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
             if self.capture.overlay.is_some() {
                 ctx.request_repaint();
-            } else {
+            } else if self.capture.scrolling.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(50));
+            } else {
+                // The recording's timer.
+                ctx.request_repaint_after(Duration::from_millis(250));
             }
         }
         let saved: Vec<Saved> = self.capture.saved.1.try_iter().collect();
@@ -196,10 +211,11 @@ impl App {
     }
 
     /// The overlay's window while it is up, the scrolling screenshot's,
-    /// and the pins'. Called from the window's frame.
+    /// the screen recording's, and the pins'. Called from the window's frame.
     pub(super) fn capture_overlay(&mut self, ctx: &egui::Context) {
         self.pin_windows(ctx);
         self.scrolling_windows(ctx);
+        self.recording_windows(ctx);
         let Some(overlay) = self.capture.overlay.as_mut() else {
             return;
         };
@@ -221,6 +237,16 @@ impl App {
         let (picture, copy) = match finish {
             // Still taking: the focus goes back once it is done.
             Finish::Scroll(area) => return self.start_scrolling(area, when),
+            Finish::Record(area) => {
+                self.end_screenshot(ctx);
+                // Named for when it starts, not when the overlay came up.
+                let when = When {
+                    taken: chrono::Local::now().naive_local(),
+                    clock: self.recording().then(|| self.recorded_seconds()),
+                    into_notes,
+                };
+                return self.start_recording(area, when);
+            }
             Finish::Cancel => return self.end_screenshot(ctx),
             Finish::Pin { picture, at, scale } => {
                 self.end_screenshot(ctx);
@@ -275,34 +301,35 @@ impl App {
         }
     }
 
-    /// Where a picture goes, and the note that links it: beside the
-    /// meeting in the window, if one is (its file is made now if it has
-    /// none yet), else in the Screenshots folder.
-    fn screenshot_place(&mut self, when: When) -> Result<(PathBuf, Option<String>)> {
+    /// Where a picture or a recording goes, and the note that links it:
+    /// beside the meeting in the window, if one is (its file is made now if
+    /// it has none yet), else in the Screenshots or Recordings folder.
+    pub(super) fn capture_place(&mut self, when: When, kind: Kind) -> Result<(PathBuf, Option<String>)> {
         let in_meeting = !self.open.read_only() && (self.open.path.is_some() || self.worth_a_file() || when.into_notes);
         if !in_meeting {
-            let dir = self.meetings_dir_path().join(files::LOOSE_DIR);
-            let stem = Moment::Loose(when.taken).stem();
-            return Ok((files::unused_png(&dir, &stem, &self.capture.pending), None));
+            let dir = self.meetings_dir_path().join(kind.loose_dir());
+            let stem = Moment::Loose(when.taken).stem(kind);
+            return Ok((files::unused_file(&dir, &stem, kind, &self.capture.pending), None));
         }
         if self.open.path.is_none() && !self.save_open_creating() {
-            anyhow::bail!("the meeting could not be saved, so its pictures have no folder yet");
+            anyhow::bail!("the meeting could not be saved, so its files have no folder yet");
         }
         let meeting = self.open.path.clone().context("the meeting has no file")?;
         let moment = when.clock.map_or(Moment::Clock(when.taken), Moment::Meeting);
-        let path = files::unused_png(&files::meeting_dir(&meeting), &moment.stem(), &self.capture.pending);
+        let dir = files::meeting_dir(&meeting);
+        let path = files::unused_file(&dir, &moment.stem(kind), kind, &self.capture.pending);
         let link = meeting
             .parent()
             .and_then(|dir| files::relative_link(dir, &path))
-            .context("the picture is not beside the meeting")?;
-        Ok((path, Some(files::image_note(&moment.label(), &link))))
+            .context("the file is not beside the meeting")?;
+        Ok((path, Some(files::note(kind, &moment.label(kind), &link))))
     }
 
     /// Saves the picture (on a thread), puts it on the clipboard with
     /// `copy`, and links it in the open meeting's notes; `aside` is said
     /// once it is saved.
     pub(super) fn keep_screenshot(&mut self, image: Image, when: When, copy: bool, aside: Option<String>) {
-        let (path, note) = match self.screenshot_place(when) {
+        let (path, note) = match self.capture_place(when, Kind::Screenshot) {
             Ok(place) => place,
             Err(e) => {
                 // Not lost: still on the clipboard when asked.
@@ -401,6 +428,7 @@ impl App {
         {
             ui.weak("The desktop does not let apps watch the keyboard here, so only the Screenshot buttons work.");
         }
+        self.recording_settings(ui);
     }
 }
 

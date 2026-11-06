@@ -5,8 +5,10 @@
 //! and a click takes it (or the whole display). A toolbar beside the
 //! selection has the drawing tools (`drawing.rs`), and copies (Enter, or a
 //! double-click), saves, pins it to the screen, starts a scrolling
-//! screenshot of it, or cancels (Esc); right-click puts the tool away,
-//! else drops the selection, or cancels when there is none.
+//! screenshot or a screen recording of it, or cancels (Esc); right-click
+//! puts the tool away, else drops the selection, or cancels when there is
+//! none. The thin outline and the small window beside an area being
+//! scrolled or recorded are here too (`outline`, `beside`).
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -16,9 +18,10 @@ use eframe::egui::{
 use super::drawing::Drawing;
 use crate::capture::annotate::Mark;
 use crate::capture::image::Image;
+use crate::capture::record;
 use crate::capture::scrolling::{self, Area};
 use crate::capture::select::{self, Handle, Mapping};
-use crate::capture::{Shot, raise_overlay};
+use crate::capture::{Shot, hide_from_captures, raise_overlay};
 
 /// The overlay window's title, by which the system's window is found.
 const TITLE: &str = "Meeting Transcriber screenshot";
@@ -32,8 +35,11 @@ const REACH: f32 = 8.0;
 const MIN_SIZE: f32 = 4.0;
 /// Between the selection and its toolbar.
 const GAP: f32 = 8.0;
-/// For how many frames the window's place is checked and set right.
-const PLACE_FRAMES: u32 = 30;
+/// For how many frames a window's place is checked and set right.
+pub(super) const PLACE_FRAMES: u32 = 30;
+/// The thickness of the outline around an area being scrolled or
+/// recorded, in points.
+const THICKNESS: f32 = 2.0;
 
 /// What was chosen: the pixels, and what was drawn on them (in their
 /// pixels), to be drawn onto them.
@@ -56,6 +62,8 @@ pub(super) enum Finish {
     },
     /// A scrolling screenshot of the area, from now on.
     Scroll(Area),
+    /// A screen recording of the area, from now on.
+    Record(Area),
     Cancel,
 }
 
@@ -64,6 +72,7 @@ pub(super) enum Finish {
 enum Tool {
     Cancel,
     Scroll,
+    Record,
     Pin,
     Save,
     Copy,
@@ -71,12 +80,20 @@ enum Tool {
 
 impl Tool {
     /// Left to right, after the drawing tools.
-    const TOOLBAR: [Tool; 5] = [Tool::Cancel, Tool::Scroll, Tool::Pin, Tool::Save, Tool::Copy];
+    const TOOLBAR: [Tool; 6] = [
+        Tool::Cancel,
+        Tool::Scroll,
+        Tool::Record,
+        Tool::Pin,
+        Tool::Save,
+        Tool::Copy,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Tool::Cancel => "Cancel",
             Tool::Scroll => "Scroll",
+            Tool::Record => "Record",
             Tool::Pin => "Pin",
             Tool::Save => "Save",
             Tool::Copy => "Copy",
@@ -87,12 +104,21 @@ impl Tool {
         match self {
             Tool::Cancel => "Esc",
             Tool::Scroll => "A long screenshot: the area scrolls down and its pictures are joined",
+            Tool::Record => {
+                "A video of the area, with sound, until you stop it (Stop beside it, or the screenshot hotkey)"
+            }
             Tool::Pin => "Keep the picture on the screen, above other windows (not saved)",
             Tool::Save if cfg!(target_os = "macos") => "Save the picture, not on the clipboard (⌘S)",
             Tool::Save => "Save the picture, not on the clipboard (Ctrl+S)",
             Tool::Copy => "Copy to the clipboard and save (Enter, or double-click)",
         }
     }
+}
+
+/// Why Scroll and Record are greyed out, when they are.
+struct Blocked {
+    scroll: Option<&'static str>,
+    record: Option<&'static str>,
 }
 
 /// What the pointer is doing with the selection.
@@ -268,15 +294,10 @@ impl Overlay {
         if let Some(sel) = self.selection {
             self.drawing.text_editor(ui, &map, sel);
         }
-        // Scrolling takes new pictures, which have nothing drawn on them.
-        let scrollable = self.drawing.marks.is_empty()
-            && self
-                .selection
-                .and_then(|s| map.to_pixels(s))
-                .is_some_and(|px| px.height >= scrolling::MIN_HEIGHT);
+        let blocked = self.blocked(&map);
         if let Some(sel) = self.selection
             && matches!(self.drag, Drag::Idle)
-            && let Some(tool) = self.toolbar(&ctx, sel, screen, scrollable)
+            && let Some(tool) = self.toolbar(&ctx, sel, screen, &blocked)
         {
             chosen = Some(tool);
         }
@@ -302,14 +323,44 @@ impl Overlay {
                 at: [d.origin_px[0] + px.x as i32, d.origin_px[1] + px.y as i32],
                 scale: d.scale,
             }),
-            Tool::Scroll => pixels.map(|rect| {
-                Finish::Scroll(Area {
+            Tool::Scroll | Tool::Record => pixels.map(|rect| {
+                let area = Area {
                     display: d,
                     display_size: [self.shot.image.width, self.shot.image.height],
                     rect,
-                })
+                };
+                if chosen == Tool::Scroll {
+                    Finish::Scroll(area)
+                } else {
+                    Finish::Record(area)
+                }
             }),
         }
+    }
+
+    /// Why Scroll and Record cannot be used on the selection, if they
+    /// cannot: they take new pictures, which have nothing drawn on them,
+    /// and need an area big enough.
+    fn blocked(&self, map: &Mapping) -> Blocked {
+        let px = self.selection.and_then(|s| map.to_pixels(s));
+        let drawn = !self.drawing.marks.is_empty();
+        let scroll = if drawn {
+            Some("Scrolling takes new pictures: only without drawings")
+        } else if px.is_none_or(|px| px.height < scrolling::MIN_HEIGHT) {
+            Some("Select a taller area to scroll")
+        } else {
+            None
+        };
+        let record = if let Some(why) = record::unsupported() {
+            Some(why)
+        } else if drawn {
+            Some("A recording shows the screen as it is: only without drawings")
+        } else if px.is_none_or(|px| px.width.min(px.height) < record::MIN_SIDE) {
+            Some("Select a bigger area to record")
+        } else {
+            None
+        };
+        Blocked { scroll, record }
     }
 
     /// Draws a new selection, or changes the one there, as the pointer
@@ -420,12 +471,11 @@ impl Overlay {
 
     /// The toolbar beside the selection: the drawing tools, then what to do
     /// with the picture, and the colours and sizes while a tool is in use.
-    /// The tool clicked, if one was. Scroll is greyed out when the
-    /// selection is too short to scroll or has drawings on it.
-    fn toolbar(&mut self, ctx: &egui::Context, sel: Rect, screen: Rect, scrollable: bool) -> Option<Tool> {
+    /// The tool clicked, if one was. Scroll and Record are greyed out when
+    /// `blocked` says why.
+    fn toolbar(&mut self, ctx: &egui::Context, sel: Rect, screen: Rect, blocked: &Blocked) -> Option<Tool> {
         let at = select::toolbar_origin(sel, self.toolbar, screen, GAP);
         let mut chosen = None;
-        let drawn = !self.drawing.marks.is_empty();
         let shown = egui::Area::new(egui::Id::unique("screenshot toolbar"))
             .order(Order::Foreground)
             .fixed_pos(at)
@@ -435,16 +485,15 @@ impl Overlay {
                         self.drawing.tool_buttons(ui);
                         ui.separator();
                         for tool in Tool::TOOLBAR {
-                            let enabled = tool != Tool::Scroll || scrollable;
-                            let why = if drawn {
-                                "Scrolling takes new pictures: only without drawings"
-                            } else {
-                                "Select a taller area to scroll"
+                            let why = match tool {
+                                Tool::Scroll => blocked.scroll,
+                                Tool::Record => blocked.record,
+                                _ => None,
                             };
                             if ui
-                                .add_enabled(enabled, egui::Button::new(tool.label()))
+                                .add_enabled(why.is_none(), egui::Button::new(tool.label()))
                                 .on_hover_text(tool.hint())
-                                .on_disabled_hover_text(why)
+                                .on_disabled_hover_text(why.unwrap_or_default())
                                 .clicked()
                             {
                                 chosen = Some(tool);
@@ -507,6 +556,51 @@ pub(super) fn keep_at(ctx: &egui::Context, origin: Pos2, size: Option<Vec2>) {
     {
         ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
     }
+}
+
+/// A thin outline just outside `area`, which stays out of its pictures:
+/// four click-through bars, windows of their own titled `title` and a
+/// number. `ready` says, for each, whether it is raised and left out of
+/// screen captures yet; `placing`, whether their places are still checked.
+pub(super) fn outline(ctx: &egui::Context, area: &Area, title: &str, ready: &mut [bool], placing: bool) {
+    let scale = area.display.scale.max(0.25);
+    let thickness = (THICKNESS * scale).round().max(1.0) as i32;
+    for (i, ([x, y, width, height], ready)) in area.outline(thickness).into_iter().zip(ready).enumerate() {
+        let title = format!("{title} {}", i + 1);
+        let (origin, size) = (pos2(x as f32, y as f32), vec2(width as f32, height as f32));
+        let builder = ViewportBuilder::default()
+            .with_title(&title)
+            .with_position((origin.to_vec2() / scale).to_pos2())
+            .with_inner_size(size / scale)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_has_shadow(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_mouse_passthrough(true)
+            .with_active(false);
+        ctx.show_viewport_immediate(ViewportId::from_hash_of(&title), builder, |ui, _| {
+            if !*ready {
+                *ready = raise_overlay(&title, false) && hide_from_captures(&title);
+            }
+            if placing {
+                keep_at(ui.ctx(), origin, Some(size));
+            }
+            ui.painter().rect_filled(ui.max_rect(), 0.0, OUTLINE);
+        });
+    }
+}
+
+/// Where a window of `size` beside `area` goes on the desktop, in its
+/// pixels (`size` and `gap` too): under the area, else above it, else
+/// inside it at the bottom right; on its display.
+pub(super) fn beside(area: &Area, size: Vec2, gap: f32) -> Pos2 {
+    let r = area.rect;
+    let rect = Rect::from_min_size(pos2(r.x as f32, r.y as f32), vec2(r.width as f32, r.height as f32));
+    let [width, height] = area.display_size;
+    let display = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
+    let [x, y] = area.display.origin_px;
+    select::toolbar_origin(rect, size, display, gap) + vec2(x as f32, y as f32)
 }
 
 /// White text on a dark rounded tag.

@@ -12,6 +12,7 @@ mod overlay;
 mod path_prompt;
 mod pins;
 mod reader;
+mod recording;
 mod scrolling;
 mod settings_page;
 mod sidebar;
@@ -927,6 +928,7 @@ impl eframe::App for App {
                 self.error_banner(ui);
                 self.install_banner(ui);
                 self.dictation_banners(ui);
+                self.recording_banner(ui);
                 match self.page {
                     Page::Meeting => self.meeting_page(ui),
                     Page::Dictation => self.dictation_page(ui),
@@ -944,6 +946,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.finish_recording();
         self.stop_session();
         self.finish_pending();
     }

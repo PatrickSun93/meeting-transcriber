@@ -198,10 +198,32 @@ pub fn doctor() -> Report {
             || {
                 settings
                     .meetings_dir_path()
-                    .join(crate::capture::files::LOOSE_DIR)
+                    .join(crate::capture::files::Kind::Screenshot.loose_dir())
                     .display()
                     .to_string()
                     + " (with no meeting open; else beside the meeting)"
+            },
+            str::to_string,
+        ),
+    );
+    let sound = settings.capture.sound();
+    r.fact(
+        "screen_recordings",
+        crate::capture::record::unsupported().map_or_else(
+            || {
+                let heard = match (sound.computer, sound.microphone) {
+                    (true, true) => "with the computer's sound and the microphone",
+                    (true, false) => "with the computer's sound",
+                    (false, true) => "with the microphone",
+                    (false, false) => "without sound",
+                };
+                format!(
+                    "{} (with no meeting open; else beside the meeting), {heard}",
+                    settings
+                        .meetings_dir_path()
+                        .join(crate::capture::files::Kind::Recording.loose_dir())
+                        .display()
+                )
             },
             str::to_string,
         ),

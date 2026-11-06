@@ -41,7 +41,8 @@ pub enum ItemKind {
 }
 
 /// The tray menu as the Mac's menu bar item shows it: the state, the latest
-/// dictations (click to copy), Take a screenshot, Pause, Open and Quit.
+/// dictations (click to copy), Take a screenshot (or Stop the screen
+/// recording), Pause, Open and Quit.
 pub fn menu_items(menu: &TrayMenu) -> Vec<MenuItem> {
     let item = |id, label: &str, kind| MenuItem {
         id,
@@ -63,7 +64,7 @@ pub fn menu_items(menu: &TrayMenu) -> Vec<MenuItem> {
         }
     }
     items.push(separator(1));
-    items.push(item(ID_SCREENSHOT, "Take a screenshot", ItemKind::Action));
+    items.push(item(ID_SCREENSHOT, menu.screenshot_label(), ItemKind::Action));
     items.push(item(ID_PAUSE, "Pause dictation", ItemKind::Check(menu.paused)));
     items.push(item(ID_OPEN, "Open Meeting Transcriber", ItemKind::Action));
     items.push(separator(2));
@@ -412,6 +413,7 @@ mod tests {
             status: "Ready: hold Right Ctrl to dictate".into(),
             recent: (0..recent).map(|i| (format!("09:0{i}"), format!("text {i}"))).collect(),
             paused,
+            recording_screen: false,
         }
     }
 
@@ -453,6 +455,13 @@ mod tests {
         assert_eq!(menu_action(RECENT + 5, &m), None);
         assert_eq!(menu_items(&menu(0, false))[2].label, "No dictations yet");
         assert_eq!(menu_items(&menu(0, false))[5].kind, ItemKind::Check(false));
+        // While the screen is recorded, the same item stops it.
+        let recording = TrayMenu {
+            recording_screen: true,
+            ..menu(0, false)
+        };
+        assert_eq!(menu_items(&recording)[4].label, "Stop screen recording");
+        assert_eq!(menu_action(ID_SCREENSHOT, &recording), Some(TrayAction::Screenshot));
     }
 
     #[test]

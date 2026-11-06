@@ -1,23 +1,21 @@
 //! A scrolling screenshot in the window: the thread that scrolls the area
 //! and joins its pictures (`capture::scrolling`), a small window beside the
 //! area with the height so far, Stop and Cancel, and a thin outline just
-//! outside the area; once it ends, the long picture is kept like any
-//! screenshot (copied, saved, linked in the notes).
+//! outside the area (`overlay::outline`); once it ends, the long picture is
+//! kept like any screenshot (copied, saved, linked in the notes).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use crossbeam_channel::Receiver;
-use eframe::egui::{
-    self, Color32, Key, Pos2, Rect, RichText, Ui, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2, vec2,
-};
+use eframe::egui::{self, Key, RichText, Ui, Vec2, ViewportBuilder, ViewportCommand, ViewportId, vec2};
 
 use super::App;
 use super::capture::When;
-use super::overlay::keep_at;
+use super::overlay::{PLACE_FRAMES, beside, keep_at, outline};
 use crate::capture::scrolling::{self, Area, End, Long, MAX_HEIGHT, Progress, State};
-use crate::capture::{hide_from_captures, raise_overlay, select};
+use crate::capture::{hide_from_captures, raise_overlay};
 
 /// The control window's title, by which the system's window is found; the
 /// outline's bars add a number to it.
@@ -26,11 +24,6 @@ const TITLE: &str = "Meeting Transcriber scrolling";
 const SIZE: Vec2 = vec2(360.0, 124.0);
 /// Between the area and the control window, in points.
 const GAP: f32 = 10.0;
-const OUTLINE: Color32 = Color32::from_rgb(40, 140, 255);
-/// The outline's thickness, in points.
-const THICKNESS: f32 = 2.0;
-/// For how many frames the windows' places are checked and set right.
-const PLACE_FRAMES: u32 = 30;
 
 /// News from the scrolling thread.
 enum Update {
@@ -145,34 +138,10 @@ impl App {
         let placing = scrolling.frames <= PLACE_FRAMES;
         let area = scrolling.area;
         let scale = area.display.scale.max(0.25);
-        let thickness = (THICKNESS * scale).round().max(1.0) as i32;
-        for (i, [x, y, width, height]) in area.outline(thickness).into_iter().enumerate() {
-            let title = format!("{TITLE} {}", i + 1);
-            let (origin, size) = (pos2(x as f32, y as f32), vec2(width as f32, height as f32));
-            let builder = ViewportBuilder::default()
-                .with_title(&title)
-                .with_position((origin.to_vec2() / scale).to_pos2())
-                .with_inner_size(size / scale)
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_has_shadow(false)
-                .with_taskbar(false)
-                .with_always_on_top()
-                .with_mouse_passthrough(true)
-                .with_active(false);
-            let ready = &mut scrolling.ready[i + 1];
-            ctx.show_viewport_immediate(ViewportId::from_hash_of(&title), builder, |ui, _| {
-                if !*ready {
-                    *ready = raise_overlay(&title, false) && hide_from_captures(&title);
-                }
-                if placing {
-                    keep_at(ui.ctx(), origin, Some(size));
-                }
-                ui.painter().rect_filled(ui.max_rect(), 0.0, OUTLINE);
-            });
-        }
+        let (window, bars) = scrolling.ready.split_at_mut(1);
+        outline(ctx, &area, TITLE, bars, placing);
 
-        let origin = control_origin(&area, SIZE * scale, GAP * scale);
+        let origin = beside(&area, SIZE * scale, GAP * scale);
         let builder = ViewportBuilder::default()
             .with_title(TITLE)
             .with_position((origin.to_vec2() / scale).to_pos2())
@@ -183,7 +152,7 @@ impl App {
             .with_always_on_top()
             .with_active(true);
         let progress = scrolling.progress;
-        let ready = &mut scrolling.ready[0];
+        let ready = &mut window[0];
         let chosen = ctx.show_viewport_immediate(ViewportId::from_hash_of(TITLE), builder, |ui, _| {
             if !*ready {
                 *ready = raise_overlay(TITLE, true) && hide_from_captures(TITLE);
@@ -200,17 +169,6 @@ impl App {
             scrolling.stop(keep);
         }
     }
-}
-
-/// Where the control window goes on the desktop, in its pixels: under the
-/// area, else above it, else inside it at the bottom right; on its display.
-fn control_origin(area: &Area, size: Vec2, gap: f32) -> Pos2 {
-    let r = area.rect;
-    let rect = Rect::from_min_size(pos2(r.x as f32, r.y as f32), vec2(r.width as f32, r.height as f32));
-    let [width, height] = area.display_size;
-    let display = Rect::from_min_size(Pos2::ZERO, vec2(width as f32, height as f32));
-    let [x, y] = area.display.origin_px;
-    select::toolbar_origin(rect, size, display, gap) + vec2(x as f32, y as f32)
 }
 
 /// The control window's content; Some when it is to stop: keeping the

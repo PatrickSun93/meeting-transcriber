@@ -1,14 +1,44 @@
-//! Where screenshots go and how notes link them: a meeting's pictures in a
-//! folder beside its file ("<file name> files"), named by the meeting's
-//! clock; others in a "Screenshots" folder in the meetings folder. The note
-//! is a Markdown image link, which Obsidian and other Markdown apps show.
+//! Where screenshots and screen recordings go and how notes link them: a
+//! meeting's in a folder beside its file ("<file name> files"), named by
+//! the meeting's clock; others in a "Screenshots" or "Recordings" folder in
+//! the meetings folder. A picture's note is a Markdown image link, which
+//! Obsidian and other Markdown apps show; a video's is a plain link.
 
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
 
-/// The folder in the meetings folder for screenshots taken with no meeting open.
-pub const LOOSE_DIR: &str = "Screenshots";
+/// What a file is: a screenshot or a screen recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Screenshot,
+    Recording,
+}
+
+impl Kind {
+    /// The first word of its name.
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Screenshot => "Screenshot",
+            Kind::Recording => "Recording",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Kind::Screenshot => "png",
+            Kind::Recording => "mp4",
+        }
+    }
+
+    /// The folder in the meetings folder for those made with no meeting open.
+    pub fn loose_dir(self) -> &'static str {
+        match self {
+            Kind::Screenshot => "Screenshots",
+            Kind::Recording => "Recordings",
+        }
+    }
+}
 
 /// When a screenshot was taken, as its name tells it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,13 +53,13 @@ pub enum Moment {
 
 impl Moment {
     /// The file name without its extension, e.g. "Screenshot 12-03".
-    pub fn stem(self) -> String {
-        format!("Screenshot {}", self.when('-'))
+    pub fn stem(self, kind: Kind) -> String {
+        format!("{} {}", kind.word(), self.when('-'))
     }
 
     /// What the note shows, e.g. "Screenshot 12:03".
-    pub fn label(self) -> String {
-        format!("Screenshot {}", self.when(':'))
+    pub fn label(self, kind: Kind) -> String {
+        format!("{} {}", kind.word(), self.when(':'))
     }
 
     fn when(self, sep: char) -> String {
@@ -48,12 +78,13 @@ pub fn meeting_dir(meeting_file: &Path) -> PathBuf {
     meeting_file.with_file_name(format!("{stem} files"))
 }
 
-/// `dir/stem.png`, or with " 2", " 3", … added when that is taken: on
-/// disk, or in `pending` (being written).
-pub fn unused_png(dir: &Path, stem: &str, pending: &[PathBuf]) -> PathBuf {
+/// `dir/stem.png` (or the kind's extension), or with " 2", " 3", … added
+/// when that is taken: on disk, or in `pending` (being written).
+pub fn unused_file(dir: &Path, stem: &str, kind: Kind, pending: &[PathBuf]) -> PathBuf {
+    let ext = kind.extension();
     let free = |p: &PathBuf| !p.exists() && !pending.contains(p);
-    std::iter::once(dir.join(format!("{stem}.png")))
-        .chain((2..).map(|n| dir.join(format!("{stem} {n}.png"))))
+    std::iter::once(dir.join(format!("{stem}.{ext}")))
+        .chain((2..).map(|n| dir.join(format!("{stem} {n}.{ext}"))))
         .find(free)
         .expect("some number is free")
 }
@@ -104,9 +135,11 @@ pub fn decode_link(link: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| link.to_string())
 }
 
-/// The note that shows a picture: `![label](link)`.
-pub fn image_note(label: &str, link: &str) -> String {
-    format!("![{}]({link})", label.replace(['[', ']'], ""))
+/// The note that shows a picture, `![label](link)`; or links a video,
+/// `[label](link)`, which Markdown apps open rather than show.
+pub fn note(kind: Kind, label: &str, link: &str) -> String {
+    let bang = if kind == Kind::Screenshot { "!" } else { "" };
+    format!("{bang}[{}]({link})", label.replace(['[', ']'], ""))
 }
 
 /// `notes` with `line` added as a line of its own at the end.
@@ -117,6 +150,15 @@ pub fn append_line(notes: &str, line: &str) -> String {
     } else {
         format!("{kept}\n{line}")
     }
+}
+
+/// `notes` without the line `line` (its first time), as `append_line` added it.
+pub fn remove_line(notes: &str, line: &str) -> String {
+    let mut lines: Vec<&str> = notes.split('\n').collect();
+    if let Some(i) = lines.iter().position(|l| l.trim_end_matches('\r') == line) {
+        lines.remove(i);
+    }
+    lines.join("\n")
 }
 
 /// The targets of the image links in `notes` (`![…](target)`), in order:
@@ -168,14 +210,18 @@ mod tests {
 
     #[test]
     fn names_follow_the_meeting_clock_or_the_time_of_day() {
-        assert_eq!(Moment::Meeting(723).stem(), "Screenshot 12-03");
-        assert_eq!(Moment::Meeting(723).label(), "Screenshot 12:03");
-        assert_eq!(Moment::Meeting(5).stem(), "Screenshot 00-05");
-        assert_eq!(Moment::Meeting(3723).label(), "Screenshot 1:02:03");
+        let shot = Kind::Screenshot;
+        assert_eq!(Moment::Meeting(723).stem(shot), "Screenshot 12-03");
+        assert_eq!(Moment::Meeting(723).label(shot), "Screenshot 12:03");
+        assert_eq!(Moment::Meeting(5).stem(shot), "Screenshot 00-05");
+        assert_eq!(Moment::Meeting(3723).label(shot), "Screenshot 1:02:03");
         let t = at("2026-11-05 14:05:09");
-        assert_eq!(Moment::Clock(t).stem(), "Screenshot 14-05-09");
-        assert_eq!(Moment::Clock(t).label(), "Screenshot 14:05:09");
-        assert_eq!(Moment::Loose(t).stem(), "Screenshot 2026-11-05 14-05-09");
+        assert_eq!(Moment::Clock(t).stem(shot), "Screenshot 14-05-09");
+        assert_eq!(Moment::Clock(t).label(shot), "Screenshot 14:05:09");
+        assert_eq!(Moment::Loose(t).stem(shot), "Screenshot 2026-11-05 14-05-09");
+        assert_eq!(Moment::Meeting(723).label(Kind::Recording), "Recording 12:03");
+        assert_eq!(Moment::Loose(t).stem(Kind::Recording), "Recording 2026-11-05 14-05-09");
+        assert_eq!(Kind::Recording.loose_dir(), "Recordings");
     }
 
     #[test]
@@ -188,21 +234,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meeting-transcriber-test-{}-png", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let shot = Kind::Screenshot;
         assert_eq!(
-            unused_png(&dir, "Screenshot 12-03", &[]),
+            unused_file(&dir, "Screenshot 12-03", shot, &[]),
             dir.join("Screenshot 12-03.png")
         );
         std::fs::write(dir.join("Screenshot 12-03.png"), b"").unwrap();
         std::fs::write(dir.join("Screenshot 12-03 2.png"), b"").unwrap();
         assert_eq!(
-            unused_png(&dir, "Screenshot 12-03", &[]),
+            unused_file(&dir, "Screenshot 12-03", shot, &[]),
             dir.join("Screenshot 12-03 3.png")
         );
         // One still being written counts as taken.
         let pending = [dir.join("Screenshot 12-03 3.png")];
         assert_eq!(
-            unused_png(&dir, "Screenshot 12-03", &pending),
+            unused_file(&dir, "Screenshot 12-03", shot, &pending),
             dir.join("Screenshot 12-03 4.png")
+        );
+        // A recording of the same moment does not clash with the pictures.
+        assert_eq!(
+            unused_file(&dir, "Screenshot 12-03", Kind::Recording, &[]),
+            dir.join("Screenshot 12-03.mp4")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -230,13 +282,21 @@ mod tests {
 
     #[test]
     fn notes_get_the_picture_on_a_line_of_its_own() {
-        let note = image_note("Screenshot 12:03", "a%20files/b.png");
-        assert_eq!(note, "![Screenshot 12:03](a%20files/b.png)");
-        assert_eq!(append_line("", &note), note);
-        assert_eq!(append_line("  \n\n", &note), note);
-        assert_eq!(append_line("- point", &note), format!("- point\n{note}"));
-        assert_eq!(append_line("- point\n\n", &note), format!("- point\n{note}"));
-        assert_eq!(image_note("a [b]", "x"), "![a b](x)");
+        let picture = note(Kind::Screenshot, "Screenshot 12:03", "a%20files/b.png");
+        assert_eq!(picture, "![Screenshot 12:03](a%20files/b.png)");
+        assert_eq!(append_line("", &picture), picture);
+        assert_eq!(append_line("  \n\n", &picture), picture);
+        assert_eq!(append_line("- point", &picture), format!("- point\n{picture}"));
+        assert_eq!(append_line("- point\n\n", &picture), format!("- point\n{picture}"));
+        assert_eq!(note(Kind::Screenshot, "a [b]", "x"), "![a b](x)");
+        let video = note(Kind::Recording, "Recording 12:03", "a%20files/c.mp4");
+        assert_eq!(video, "[Recording 12:03](a%20files/c.mp4)");
+        assert!(image_links(&video).is_empty(), "a video is not shown as a picture");
+        // A recording that failed takes its line back out.
+        let notes = append_line("- point\n- next", &video);
+        assert_eq!(remove_line(&notes, &video), "- point\n- next");
+        assert_eq!(remove_line("a\r\nb", "a"), "b");
+        assert_eq!(remove_line("a\nb", "c"), "a\nb");
     }
 
     #[test]

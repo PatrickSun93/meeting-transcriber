@@ -468,7 +468,11 @@ impl App {
     fn update_tray(&mut self) {
         let Some(tray) = &self.dict.tray else { return };
         let status = self.dict.status();
-        let (phase, text) = self.dictation_state(&status);
+        let (mut phase, mut text) = self.dictation_state(&status);
+        let recording_screen = self.recording_screen();
+        if recording_screen {
+            (phase, text) = (Phase::Recording, "Recording the screen".into());
+        }
         let menu = TrayMenu {
             status: text.clone(),
             recent: status
@@ -477,6 +481,7 @@ impl App {
                 .map(|(at, text)| (at.format("%H:%M").to_string(), text.clone()))
                 .collect(),
             paused: self.dict.paused,
+            recording_screen,
         };
         tray.set(tray_icon(phase), &format!("Meeting Transcriber · {text}"), menu);
     }
