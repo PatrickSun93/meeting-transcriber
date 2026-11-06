@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "meeting-transcriber"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
