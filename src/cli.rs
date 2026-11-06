@@ -172,6 +172,41 @@ pub fn doctor() -> Report {
         }
     }
 
+    // Screenshots.
+    let capture = settings.capture.hotkey();
+    r.fact(
+        "screenshot_hotkey",
+        format!("{} (setting: {})", capture.label(), capture.name()),
+    );
+    if Shortcut::parse(&settings.capture.hotkey).is_none() {
+        r.problems.push(format!(
+            "The screenshot hotkey setting {:?} is not a key or combination; {} is used instead.",
+            settings.capture.hotkey,
+            capture.label()
+        ));
+    }
+    if capture == hotkey {
+        r.problems.push(format!(
+            "The screenshot hotkey and the dictation hotkey are both {}: holding it dictates and takes a \
+             screenshot.",
+            capture.label()
+        ));
+    }
+    r.fact(
+        "screenshots",
+        crate::capture::unsupported().map_or_else(
+            || {
+                settings
+                    .meetings_dir_path()
+                    .join(crate::capture::files::LOOSE_DIR)
+                    .display()
+                    .to_string()
+                    + " (with no meeting open; else beside the meeting)"
+            },
+            str::to_string,
+        ),
+    );
+
     // Where Whisper runs.
     for (key, value) in crate::gpu::report() {
         r.fact(key, value);
@@ -212,7 +247,7 @@ pub fn set_setting(settings: &Settings, key: &str, value: &str) -> Result<Settin
     if value.contains(['\n', '\r']) {
         bail!("a setting is one line");
     }
-    if key == "dictation_hotkey" && Shortcut::parse(value).is_none() {
+    if (key == "dictation_hotkey" || key == "capture_hotkey") && Shortcut::parse(value).is_none() {
         bail!(
             "{value:?} is not a key or combination. Examples: right_ctrl, f13, ctrl+shift+vk:68. \
              Run `meeting-transcriber keys` and press the keys to see their names."
@@ -282,6 +317,7 @@ pub fn run_settings(args: &[String], json: bool) -> Result<()> {
 pub fn run_keys(once: bool, save: bool, json: bool) -> Result<()> {
     let mut settings = Settings::load();
     let hotkey = settings.dictation.hotkey();
+    let screenshot = settings.capture.hotkey();
     let (tx, rx) = crossbeam_channel::unbounded();
     let watch = platform::watch_hotkey(hotkey.clone(), move |event| {
         let _ = tx.send(event);
@@ -310,14 +346,21 @@ pub fn run_keys(once: bool, save: bool, json: bool) -> Result<()> {
             _ => continue,
         };
         let is_hotkey = pressed == hotkey;
+        let is_screenshot = pressed == screenshot;
         if json {
             println!(
-                "{{\"label\":{},\"name\":{},\"is_hotkey\":{is_hotkey}}}",
+                "{{\"label\":{},\"name\":{},\"is_hotkey\":{is_hotkey},\"is_screenshot_hotkey\":{is_screenshot}}}",
                 json_string(&pressed.label()),
                 json_string(&pressed.name())
             );
         } else {
-            let mark = if is_hotkey { "   <- the dictation hotkey" } else { "" };
+            let mark = if is_hotkey {
+                "   <- the dictation hotkey"
+            } else if is_screenshot {
+                "   <- the screenshot hotkey"
+            } else {
+                ""
+            };
             println!("{}   (setting: {}){mark}", pressed.label(), pressed.name());
         }
         let _ = std::io::stdout().flush();
@@ -404,6 +447,9 @@ mod tests {
         let changed = set_setting(&s, "dictation_hotkey", "ctrl+shift+vk:68").unwrap();
         assert_eq!(changed.dictation.hotkey, "ctrl+shift+vk:68");
         assert!(set_setting(&s, "dictation_hotkey", "nonsense").is_err());
+        let shot = set_setting(&s, "capture_hotkey", "super+shift+vk:20").unwrap();
+        assert_eq!(shot.capture.hotkey, "super+shift+vk:20");
+        assert!(set_setting(&s, "capture_hotkey", "ctrl+shift").is_err());
         assert!(set_setting(&s, "no_such_setting", "1").is_err());
         assert!(set_setting(&s, "dictation_min_seconds", "abc").is_err());
         assert!(set_setting(&s, "language", "a\nb").is_err());

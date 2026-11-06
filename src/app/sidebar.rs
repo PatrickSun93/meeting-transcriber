@@ -1,11 +1,12 @@
 //! The sidebar: Meetings or Dictation, search, the meetings (or dictations)
-//! grouped by day, and Settings pinned to the bottom.
+//! grouped by day, and Screenshot and Settings pinned to the bottom.
 
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Galley, Key, Response, RichText, Sense, Ui, Vec2,
     text::{LayoutJob, TextWrapping},
 };
 
+use super::capture::Trigger;
 use super::library::DEFAULT_TITLE;
 use super::{App, Page, SidebarTab, platform, theme};
 use crate::meetings::{self, Entry, Kind};
@@ -63,6 +64,15 @@ impl App {
             .frame(Frame::new())
             .show(ui, |ui| {
                 ui.add_space(6.0);
+                let key = self.capture.settings.hotkey().label();
+                if nav_item(ui, "📷", "Screenshot", false, None)
+                    .on_hover_text(format!(
+                        "Take a screenshot ({key}): saved beside the open meeting, linked in its notes"
+                    ))
+                    .clicked()
+                {
+                    self.start_screenshot(Trigger::Window);
+                }
                 if nav_item(ui, "⚙", "Settings", self.page == Page::Settings, None).clicked() {
                     self.page = Page::Settings;
                 }

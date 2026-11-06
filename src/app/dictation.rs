@@ -1,6 +1,7 @@
-//! Dictation in the window: starting the hotkey watcher, handing the
-//! dictation threads the shared engine and the settings, the menu bar (or
-//! tray) item, closing to it, and the recordings list for the sidebar.
+//! Dictation in the window: starting the hotkey watcher (which also
+//! watches the screenshot hotkey), handing the dictation threads the shared
+//! engine and the settings, the menu bar (or tray) item, closing to it, and
+//! the recordings list for the sidebar.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -9,9 +10,10 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 
 use super::App;
+use super::capture::Trigger;
 use crate::dictation::archive::{self, Clip};
 use crate::dictation::{self, Claim, Dictation, DictationConfig, Engine, Phase, Status, voice2cursor};
-use crate::platform::{self, HotkeyWatch, KeyEvent, TrayAction, TrayIcon, TrayMenu};
+use crate::platform::{self, HotkeyWatch, KeyEvent, Press, TrayAction, TrayIcon, TrayMenu};
 use crate::settings::DictationSettings;
 
 /// How often the recordings folder is listed again while it is shown.
@@ -21,6 +23,14 @@ const RESCAN_EVERY: Duration = Duration::from_secs(5);
 const QUIT_GRACE: Duration = Duration::from_secs(3);
 /// How often to look for a running voice2cursor.
 const VOICE2CURSOR_EVERY: Duration = Duration::from_secs(3);
+
+/// Which setting "Record keys…" fills in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum KeysFor {
+    #[default]
+    Dictation,
+    Screenshot,
+}
 
 /// The recordings folder, listed in the background.
 #[derive(Default)]
@@ -43,6 +53,8 @@ pub(super) struct DictationState {
     pub hotkey: Option<HotkeyWatch>,
     /// Why the hotkey can't be watched, until dismissed.
     pub hotkey_error: Option<String>,
+    /// What the keys being recorded are for.
+    keys_for: KeysFor,
     key_events: (Sender<KeyEvent>, Receiver<KeyEvent>),
     /// voice2cursor was found running, so dictation was paused.
     pub voice2cursor_banner: bool,
@@ -109,6 +121,7 @@ impl DictationState {
             pushed_paused: other_copy,
             hotkey: None,
             hotkey_error: None,
+            keys_for: KeysFor::default(),
             key_events: crossbeam_channel::unbounded(),
             voice2cursor_banner: false,
             voice2cursor_running: false,
@@ -192,6 +205,7 @@ impl App {
         });
         match result {
             Ok(watch) => {
+                watch.set_press(Press::Screenshot, self.capture.settings.hotkey());
                 let probe = watch.clone();
                 self.dict
                     .dictation
@@ -293,7 +307,11 @@ impl App {
         let events: Vec<KeyEvent> = self.dict.key_events.1.try_iter().collect();
         for event in events {
             match event {
-                KeyEvent::Captured(key) => self.dict.settings.hotkey = key.name(),
+                KeyEvent::Captured(key) => match self.dict.keys_for {
+                    KeysFor::Dictation => self.dict.settings.hotkey = key.name(),
+                    KeysFor::Screenshot => self.capture.settings.hotkey = key.name(),
+                },
+                KeyEvent::Pressed(Press::Screenshot) => self.start_screenshot(Trigger::Hotkey),
                 KeyEvent::Stopped => {
                     self.dict.hotkey = None;
                     self.dict.hotkey_error = Some(
@@ -307,9 +325,17 @@ impl App {
         }
     }
 
-    /// Whether the next key press is being captured as the hotkey.
-    pub(super) fn capturing_hotkey(&self) -> bool {
-        self.dict.hotkey.as_ref().is_some_and(HotkeyWatch::capturing)
+    /// Whether the next keys pressed are being recorded as the hotkey `of`.
+    pub(super) fn capturing_keys(&self, of: KeysFor) -> bool {
+        self.dict.keys_for == of && self.dict.hotkey.as_ref().is_some_and(HotkeyWatch::capturing)
+    }
+
+    /// Records the next keys pressed as the hotkey `of`.
+    pub(super) fn record_keys(&mut self, of: KeysFor) {
+        if let Some(watch) = &self.dict.hotkey {
+            self.dict.keys_for = of;
+            watch.capture_next(true);
+        }
     }
 
     fn poll_tray_actions(&mut self, ctx: &egui::Context) {
@@ -321,6 +347,7 @@ impl App {
                         self.errors.push(format!("{e:#}"));
                     }
                 }
+                TrayAction::Screenshot => self.start_screenshot(Trigger::Menu),
                 TrayAction::TogglePause => self.set_dictation_paused(!self.dict.paused),
                 TrayAction::OpenWindow => self.show_window(ctx),
                 TrayAction::Quit => {
@@ -403,10 +430,14 @@ impl App {
             self.dict.pushed_paused = self.dict.paused;
         }
         let key = self.dict.settings.hotkey();
-        if let Some(watch) = &self.dict.hotkey
-            && watch.key() != key
-        {
-            watch.set_key(key);
+        if let Some(watch) = &self.dict.hotkey {
+            if watch.key() != key {
+                watch.set_key(key);
+            }
+            let screenshot = self.capture.settings.hotkey();
+            if !watch.presses().contains(&(Press::Screenshot, screenshot.clone())) {
+                watch.set_press(Press::Screenshot, screenshot);
+            }
         }
     }
 

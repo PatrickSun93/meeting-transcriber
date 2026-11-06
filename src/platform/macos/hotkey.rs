@@ -14,7 +14,7 @@ use core_graphics::event::{
 };
 use crossbeam_channel::Sender;
 
-use super::super::{HotkeyWatch, KeyEvent};
+use super::super::{HotkeyWatch, KeyEvent, PressTracker};
 use crate::dictation::hotkey::mac::{self, KeyEventKind};
 use crate::dictation::hotkey::{Outcome, Shortcut, Tracker};
 
@@ -68,6 +68,7 @@ fn run_tap(watch: &HotkeyWatch, on_event: &dyn Fn(KeyEvent), ready: &Sender<Resu
     let port: Rc<Cell<CFMachPortRef>> = Rc::new(Cell::new(std::ptr::null_mut()));
     let tap_port = port.clone();
     let tracker = RefCell::new(Tracker::default());
+    let presses = RefCell::new(PressTracker::default());
     let tap = CGEventTap::new(
         CGEventTapLocation::Session,
         CGEventTapPlacement::HeadInsertEventTap,
@@ -95,7 +96,10 @@ fn run_tap(watch: &HotkeyWatch, on_event: &dyn Fn(KeyEvent), ready: &Sender<Resu
             let code = event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE) as u32;
             let flags = event.get_flags().bits();
             let down = mac::key_change(kind, code, flags)?;
-            // Repeats are told apart by the tracker: the key is already down.
+            // Repeats are told apart by the trackers: the key is already down.
+            for press in presses.borrow_mut().key(&mac::CODES, watch, code, down) {
+                on_event(KeyEvent::Pressed(press));
+            }
             let outcome = tracker
                 .borrow_mut()
                 .key(&mac::CODES, &watch.key(), watch.capturing(), code, down);

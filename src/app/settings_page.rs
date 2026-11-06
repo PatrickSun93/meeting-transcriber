@@ -1,5 +1,5 @@
 //! The settings page: models, storage folders, recognition options,
-//! dictation (in `dictation_page.rs`), about.
+//! dictation (in `dictation_page.rs`), screenshots (in `capture.rs`), about.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,7 @@ impl App {
                     Self::storage_card,
                     Self::recognition_card,
                     Self::dictation_card,
+                    Self::screenshot_card,
                     Self::about_card,
                 ] {
                     theme::card(ui).show(ui, |ui| {

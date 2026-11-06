@@ -1,5 +1,6 @@
 //! The menu bar item: an SF Symbol for dictation's state, and a menu with
-//! the latest dictations (click to copy), Pause, Open and Quit. AppKit
+//! the latest dictations (click to copy), Take a screenshot, Pause, Open
+//! and Quit. AppKit
 //! objects live on the main thread, so this is made and updated from the
 //! window's frame loop; the menu is rebuilt each time it opens.
 
@@ -21,6 +22,7 @@ use super::super::{TrayAction, TrayIcon, TrayMenu};
 const TAG_PAUSE: isize = 1000;
 const TAG_OPEN: isize = 1001;
 const TAG_QUIT: isize = 1002;
+const TAG_SCREENSHOT: isize = 1003;
 /// Longest a dictation is shown in the menu, in characters.
 const MENU_TEXT: usize = 48;
 
@@ -67,6 +69,7 @@ impl Target {
     fn clicked(&self, tag: isize) {
         let ivars = self.ivars();
         let action = match tag {
+            TAG_SCREENSHOT => TrayAction::Screenshot,
             TAG_PAUSE => TrayAction::TogglePause,
             TAG_OPEN => TrayAction::OpenWindow,
             TAG_QUIT => TrayAction::Quit,
@@ -94,6 +97,7 @@ impl Target {
             }
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&self.item(mtm, "Take a screenshot", Some(TAG_SCREENSHOT)));
         let pause = self.item(mtm, "Pause dictation", Some(TAG_PAUSE));
         pause.setState(if model.paused {
             NSControlStateValueOn

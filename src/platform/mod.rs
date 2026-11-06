@@ -19,7 +19,7 @@ use crossbeam_channel::Receiver;
 
 #[cfg(test)]
 use crate::dictation::hotkey::Hotkey;
-use crate::dictation::hotkey::Shortcut;
+use crate::dictation::hotkey::{Codes, Outcome, Shortcut, Tracker};
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod linux;
@@ -103,6 +103,8 @@ pub enum KeyEvent {
     /// Start dictating, or stop if dictating (Linux: `meeting-transcriber
     /// dictate toggle`).
     Toggle,
+    /// A press shortcut (see `HotkeyWatch::set_press`) went down.
+    Pressed(Press),
     /// The keys pressed while capturing (see `HotkeyWatch::capture_next`):
     /// every key held until the first was let go of.
     Captured(Shortcut),
@@ -113,10 +115,18 @@ pub enum KeyEvent {
     Stopped,
 }
 
+/// A shortcut that does something once when pressed, watched next to
+/// dictation's hold-to-talk hotkey.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Press {
+    Screenshot,
+}
+
 /// The running hotkey watcher's settings, shared with its thread.
 #[derive(Clone, Default)]
 pub struct HotkeyWatch {
     key: Arc<Mutex<Shortcut>>,
+    presses: Arc<Mutex<Vec<(Press, Shortcut)>>>,
     capture: Arc<AtomicBool>,
     system_key: Arc<Mutex<Option<String>>>,
 }
@@ -141,6 +151,21 @@ impl HotkeyWatch {
         *self.key.lock().unwrap_or_else(|e| e.into_inner()) = key;
     }
 
+    /// The press shortcuts and what each does.
+    pub fn presses(&self) -> Vec<(Press, Shortcut)> {
+        self.presses.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Watches `key` too, reporting `Pressed(press)` each time it goes down
+    /// (not while capturing). Not on Wayland, where the desktop decides.
+    pub fn set_press(&self, press: Press, key: Shortcut) {
+        let mut presses = self.presses.lock().unwrap_or_else(|e| e.into_inner());
+        match presses.iter_mut().find(|(p, _)| *p == press) {
+            Some(entry) => entry.1 = key,
+            None => presses.push((press, key)),
+        }
+    }
+
     /// The next keys pressed are reported as `Captured` instead of being
     /// compared with the hotkey: all of them, once the first is let go of.
     pub fn capture_next(&self, on: bool) {
@@ -149,6 +174,47 @@ impl HotkeyWatch {
 
     pub fn capturing(&self) -> bool {
         self.capture.load(Ordering::Relaxed)
+    }
+}
+
+/// Follows the press shortcuts for a watcher thread, one `Tracker` each,
+/// fed every key event next to dictation's own tracker.
+#[derive(Debug, Default)]
+pub(crate) struct PressTracker {
+    trackers: Vec<(Press, Tracker)>,
+}
+
+impl PressTracker {
+    /// Takes in a key going down or up; the press shortcuts it completed.
+    pub(crate) fn key(&mut self, codes: &Codes, watch: &HotkeyWatch, code: u32, down: bool) -> Vec<Press> {
+        let capturing = watch.capturing();
+        let mut pressed = Vec::new();
+        for (press, key) in watch.presses() {
+            let i = match self.trackers.iter().position(|(p, _)| *p == press) {
+                Some(i) => i,
+                None => {
+                    self.trackers.push((press, Tracker::default()));
+                    self.trackers.len() - 1
+                }
+            };
+            let outcome = self.trackers[i].1.key(codes, &key, capturing, code, down);
+            if outcome == Some(Outcome::Down) {
+                pressed.push(press);
+            }
+        }
+        pressed
+    }
+
+    /// Whether `code` is a plain key of a press combination held now (the
+    /// 2 of Ctrl+Shift+2), which the Windows hook keeps from the app in front.
+    #[cfg(any(windows, test))]
+    pub(crate) fn holds_plain_key(&self, codes: &Codes, watch: &HotkeyWatch, code: u32) -> bool {
+        watch.presses().iter().any(|(press, key)| {
+            key.single().is_none()
+                && (codes.modifier)(code).is_empty()
+                && key.keys.iter().any(|k| (codes.code)(*k) == code)
+                && self.trackers.iter().any(|(p, t)| p == press && t.active())
+        })
     }
 }
 
@@ -196,28 +262,51 @@ pub struct TrayMenu {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayAction {
     Copy(String),
+    Screenshot,
     TogglePause,
     OpenWindow,
     Quit,
 }
 
-/// Puts `text` on the clipboard. The clipboard handle is kept: on Linux
-/// (X11) the text is only there while its owner lives.
+/// Puts `text` on the clipboard.
 pub fn copy_text(text: &str) -> Result<()> {
+    with_clipboard(|c| c.set_text(text.to_string()))
+}
+
+/// Puts a picture on the clipboard (RGBA, rows from the top).
+pub fn copy_image(width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+    with_clipboard(|c| {
+        c.set_image(arboard::ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: rgba.into(),
+        })
+    })
+}
+
+/// Runs `set` on the clipboard. The handle is kept: on Linux (X11) what
+/// was copied is only there while its owner lives.
+fn with_clipboard(set: impl FnOnce(&mut arboard::Clipboard) -> Result<(), arboard::Error>) -> Result<()> {
     static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
     let mut clipboard = CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner());
     if clipboard.is_none() {
         *clipboard = Some(arboard::Clipboard::new().context("could not open the clipboard")?);
     }
-    let result = clipboard
-        .as_mut()
-        .map(|c| c.set_text(text.to_string()))
-        .context("no clipboard")?;
+    let result = set(clipboard.as_mut().context("no clipboard")?);
     if result.is_err() {
         // Try a fresh handle next time.
         *clipboard = None;
     }
     result.context("could not copy to the clipboard")
+}
+
+/// Whether this is a Wayland session (Linux), where apps may not watch the
+/// keyboard or read the screen.
+pub fn wayland_session() -> bool {
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return imp::wayland();
+    #[cfg(any(target_os = "macos", windows))]
+    false
 }
 
 /// How find-in-transcript is reached from the keyboard.
@@ -410,6 +499,48 @@ mod tests {
         assert_eq!(watch.system_key(), None);
         thread_side.set_system_key(Some("Ctrl+Alt+D".into()));
         assert_eq!(watch.system_key().as_deref(), Some("Ctrl+Alt+D"));
+        watch.set_press(Press::Screenshot, Hotkey::F(14).into());
+        watch.set_press(Press::Screenshot, Hotkey::F(15).into());
+        assert_eq!(
+            thread_side.presses(),
+            [(Press::Screenshot, Shortcut::from(Hotkey::F(15)))]
+        );
+    }
+
+    #[test]
+    fn press_shortcuts_fire_once_per_press_and_not_while_capturing() {
+        use crate::dictation::hotkey::win;
+        let watch = HotkeyWatch::default();
+        // Ctrl+Shift+2.
+        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+shift+vk:50").unwrap());
+        let mut presses = PressTracker::default();
+        let mut feed = |code: u32, down: bool| presses.key(&win::CODES, &watch, code, down);
+        assert!(feed(0xA2, true).is_empty());
+        assert!(feed(0xA0, true).is_empty());
+        assert_eq!(feed(0x32, true), [Press::Screenshot]);
+        // Held: the key repeats, nothing more.
+        assert!(feed(0x32, true).is_empty());
+        assert!(feed(0x32, false).is_empty());
+        assert_eq!(feed(0x32, true), [Press::Screenshot]);
+        assert!(feed(0x32, false).is_empty());
+        watch.capture_next(true);
+        assert!(feed(0x32, true).is_empty());
+        assert!(feed(0x32, false).is_empty());
+    }
+
+    #[test]
+    fn the_plain_key_of_a_held_press_combination_is_known() {
+        use crate::dictation::hotkey::win;
+        let watch = HotkeyWatch::default();
+        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+vk:50").unwrap());
+        let mut presses = PressTracker::default();
+        presses.key(&win::CODES, &watch, 0xA2, true);
+        assert!(!presses.holds_plain_key(&win::CODES, &watch, 0x32));
+        presses.key(&win::CODES, &watch, 0x32, true);
+        assert!(presses.holds_plain_key(&win::CODES, &watch, 0x32));
+        // Ctrl itself is never kept from apps, nor another key.
+        assert!(!presses.holds_plain_key(&win::CODES, &watch, 0xA2));
+        assert!(!presses.holds_plain_key(&win::CODES, &watch, 0x33));
     }
 
     #[test]

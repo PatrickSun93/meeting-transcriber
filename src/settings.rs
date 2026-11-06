@@ -29,6 +29,35 @@ pub struct Settings {
     /// the CUDA or Vulkan build next to the program; see `gpu`).
     pub use_gpu: bool,
     pub dictation: DictationSettings,
+    pub capture: CaptureSettings,
+}
+
+/// Screenshots' choices.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaptureSettings {
+    /// A `Shortcut` name, pressed (not held) to take a screenshot.
+    pub hotkey: String,
+}
+
+impl Default for CaptureSettings {
+    fn default() -> Self {
+        Self {
+            hotkey: crate::capture::default_hotkey().name(),
+        }
+    }
+}
+
+impl CaptureSettings {
+    /// Takes one `key=value` line of `settings.txt`, if it is screenshots'.
+    fn parse_line(&mut self, key: &str, value: &str) {
+        if key == "capture_hotkey" {
+            self.hotkey = value.to_string();
+        }
+    }
+
+    pub fn hotkey(&self) -> Shortcut {
+        Shortcut::parse(&self.hotkey).unwrap_or_else(crate::capture::default_hotkey)
+    }
 }
 
 /// Dictation's choices, with voice2cursor's defaults.
@@ -167,6 +196,7 @@ impl Default for Settings {
             meetings_dir: String::new(),
             models_move_from: String::new(),
             dictation: DictationSettings::default(),
+            capture: CaptureSettings::default(),
         }
     }
 }
@@ -218,7 +248,10 @@ impl Settings {
                 "meetings_dir" => s.meetings_dir = value.to_string(),
                 "models_move_from" => s.models_move_from = value.to_string(),
                 "use_gpu" => s.use_gpu = flag,
-                key => s.dictation.parse_line(key, value),
+                key => {
+                    s.dictation.parse_line(key, value);
+                    s.capture.parse_line(key, value);
+                }
             }
         }
         s
@@ -239,7 +272,8 @@ impl Settings {
              dictation={}\ndictation_hotkey={}\ndictation_language={}\ndictation_prompt={}\ndictation_auto_paste={}\n\
              dictation_sounds={}\ndictation_save_recordings={}\ndictation_recordings_dir={}\n\
              dictation_min_seconds={}\ndictation_max_seconds={}\n\
-             ollama={}\ncleanup_api={}\nollama_url={}\nollama_model={}\nollama_timeout={}\ncleanup_api_key={}\n",
+             ollama={}\ncleanup_api={}\nollama_url={}\nollama_model={}\nollama_timeout={}\ncleanup_api_key={}\n\
+             capture_hotkey={}\n",
             self.model,
             self.language,
             self.capture_me,
@@ -265,6 +299,7 @@ impl Settings {
             line(&d.ollama_model),
             d.ollama_timeout,
             line(&d.cleanup_api_key),
+            self.capture.hotkey,
         )
     }
 
@@ -338,6 +373,9 @@ mod tests {
                 ollama_timeout: 7.5,
                 cleanup_api_key: "sk-test".into(),
             },
+            capture: CaptureSettings {
+                hotkey: "alt+shift+f13".into(),
+            },
         };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(
@@ -352,8 +390,10 @@ mod tests {
         assert_eq!(old.models_dir, "");
         assert_eq!(old.models_dir_path(), None);
         assert_eq!(old.models_move_from_path(), None);
-        // …and before dictation: voice2cursor's defaults.
+        // …and before dictation: voice2cursor's defaults; before
+        // screenshots, their default hotkey.
         assert_eq!(old.dictation, DictationSettings::default());
+        assert_eq!(old.capture.hotkey(), crate::capture::default_hotkey());
         assert_eq!(old.dictation.hotkey(), Shortcut::default());
         let cfg = old.dictation.config();
         assert_eq!((cfg.min_seconds, cfg.max_seconds), (0.35, 300.0));
@@ -391,6 +431,23 @@ mod tests {
             Some("first line second=line")
         );
         assert_eq!(Settings::default().dictation.config().initial_prompt, None);
+    }
+
+    #[test]
+    fn the_screenshot_hotkey_is_read_and_falls_back() {
+        let s = Settings::parse("capture_hotkey=ctrl+shift+vk:83");
+        assert_eq!(s.capture.hotkey().name(), "ctrl+shift+vk:83");
+        // It is not dictation's, and dictation's is not it.
+        assert_eq!(s.dictation, DictationSettings::default());
+        assert_eq!(
+            Settings::parse("dictation_hotkey=f13").capture,
+            CaptureSettings::default()
+        );
+        assert_eq!(
+            Settings::parse("capture_hotkey=nonsense").capture.hotkey(),
+            crate::capture::default_hotkey()
+        );
+        assert!(Settings::default().to_text().contains("\ncapture_hotkey="));
     }
 
     #[test]

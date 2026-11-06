@@ -35,7 +35,7 @@ const MODIFIER_WAIT: Duration = Duration::from_millis(1500);
 const SOUNDS: &str = "/usr/share/sounds/freedesktop/stereo";
 
 /// Whether this is a Wayland session.
-pub(super) fn wayland() -> bool {
+pub(in crate::platform) fn wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland")
 }

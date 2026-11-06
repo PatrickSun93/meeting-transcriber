@@ -1,16 +1,19 @@
 //! The native window (egui): app state, background work, and the frame loop.
 //! Pages live in their own modules.
 
+mod capture;
 mod dictation;
 mod dictation_page;
 mod importing;
 mod library;
 mod meeting_page;
+mod overlay;
 mod path_prompt;
 mod reader;
 mod settings_page;
 mod sidebar;
 mod theme;
+mod thumbnails;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +30,7 @@ use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, Progress, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
+use capture::CaptureState;
 use dictation::DictationState;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
 use path_prompt::{PathPrompt, PromptFor};
@@ -201,6 +205,7 @@ pub struct App {
     /// A recording being transcribed (Import).
     import: Option<importing::Import>,
     import_pick: Option<importing::ImportPick>,
+    capture: CaptureState,
 }
 
 /// Marks that the user does not want to be asked to install.
@@ -232,6 +237,7 @@ impl App {
         let mut transcript = Transcript::default();
         transcript.echo.enabled = settings.remove_echo;
         let dict = DictationState::new(settings.dictation.clone(), &cc.egui_ctx, start_hidden);
+        let capture = CaptureState::new(settings.capture.clone());
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
             page: Page::Meeting,
@@ -274,6 +280,7 @@ impl App {
             cuda_addon: CudaAddon::default(),
             import: None,
             import_pick: None,
+            capture,
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -772,6 +779,7 @@ impl App {
             meetings_dir: self.meetings_dir.clone(),
             models_move_from: self.models_move_from.clone(),
             dictation: self.dict.settings.clone(),
+            capture: self.capture.settings.clone(),
         }
     }
 
@@ -896,6 +904,7 @@ impl eframe::App for App {
         self.refresh_library();
         self.autosave();
         self.dictation_logic(ctx);
+        self.capture_logic(ctx);
         self.save_settings_if_changed();
         if self.recording() && self.dict.window_hidden {
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -923,6 +932,7 @@ impl eframe::App for App {
             });
 
         self.path_prompt_dialog(ui.ctx());
+        self.capture_overlay(ui.ctx());
 
         if self.recording() {
             // Keep the meters and clock moving.

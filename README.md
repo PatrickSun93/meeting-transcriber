@@ -12,6 +12,7 @@ A native app, written in Rust, that writes down your meetings as they happen. It
 - **Near real time**: live text appears about a second after someone starts speaking and is finalised at each pause.
 - **Dictation**: hold Right Option (Mac) or Right Ctrl (Windows, Linux) anywhere and speak; let go and the text is pasted where the cursor is. It uses the same Whisper model as meetings, loaded once. See [Dictation](#dictation).
 - **Import a recording**: a Teams or Zoom video, or any audio file, is transcribed with its speakers told apart (Speaker 1, Speaker 2, …, renamed with a click). See [Import a recording](#import-a-recording).
+- **Screenshots**: press ⌘⇧2 (Ctrl+Shift+2 on Windows and Linux) in any app, drag over what to keep or click a window, and it is copied and saved next to the open meeting, with a line in its notes. See [Screenshots and screen recording](#screenshots-and-screen-recording).
 
 Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running on the Mac's GPU (Metal; on Windows and Linux the graphics card, with Vulkan or, on NVIDIA cards, CUDA, else the processor). It uses the `large-v3-turbo` model by default.
 
@@ -61,7 +62,7 @@ Speech-to-text is [whisper.cpp](https://github.com/ggml-org/whisper.cpp) running
 macOS asks for two permissions:
 
 - **Microphone**: needed for *Me*. Click Allow when asked.
-- **Screen & System Audio Recording**: needed for *Others*. The app only uses the audio. Allow it in **System Settings → Privacy & Security → Screen & System Audio Recording**, then **quit and reopen** the app.
+- **Screen & System Audio Recording**: needed for *Others*, and for screenshots. Allow it in **System Settings → Privacy & Security → Screen & System Audio Recording**, then **quit and reopen** the app.
 
 If *Others* stays silent, this permission is almost always the reason. After you rebuild the app, macOS may treat it as a new app; switch the permission off and on again.
 
@@ -82,7 +83,7 @@ scripts, bug reports and AI agents such as Claude Code (see [AGENTS.md](AGENTS.m
 | `meeting-transcriber doctor [--json]` | What the app sees here: settings file, folders, models, hotkey, permissions, and what looks wrong |
 | `meeting-transcriber gpu [install-cuda [--from URL_OR_ZIP]]` | Where Whisper runs and why; with an NVIDIA card, downloads (or unpacks) CUDA support |
 | `meeting-transcriber log [--lines N]` | The end of the app's log (`meeting-transcriber.log` in the app data folder); on Windows, the only place errors go |
-| `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it; `--save` makes it the dictation hotkey |
+| `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it, and whether it is the dictation or the screenshot hotkey; `--save` makes it the dictation hotkey |
 | `meeting-transcriber settings [path \| get KEY \| set KEY VALUE] [--json]` | Lists, reads or changes settings, checked before saving |
 | `meeting-transcriber transcribe …` | Transcribes WAV files (see `meeting-transcriber help`) |
 
@@ -102,6 +103,7 @@ The same app builds on Windows 10/11 and Linux, with the same features: *Me*, *O
 | Dictation hotkey (default) | Right Option, any app (Input Monitoring) | Right Ctrl, any app | Right Ctrl on X11; on Wayland the desktop's shortcut, or `meeting-transcriber dictate toggle` bound to one ([details](#linux-1)) |
 | Dictation pastes with | ⌘V (Accessibility) | Ctrl+V | Ctrl+V: XTest on X11, `wtype` or `ydotool` on Wayland |
 | Dictation lives in | the menu bar | the notification area (tray) | the tray, where the desktop has one (KDE, Cinnamon, XFCE…; GNOME with the AppIndicator extension) |
+| Screenshots | ScreenCaptureKit (Quartz on macOS 13), ⌘⇧2 (Input Monitoring, Screen Recording) | GDI, Ctrl+Shift+2 | X11 only (`GetImage`), Ctrl+Shift+2; not on Wayland yet |
 
 On the processor, **Large v3 Turbo** keeps up live only on a fast machine. If the status line shows more than "1× real time", pick **Small** or **Base** in Settings, or build with a GPU backend.
 
@@ -229,7 +231,7 @@ Hold a key, speak, and let go: the text is typed where the cursor is, in any app
 
 Dictation is served before meeting audio by the same Whisper engine, so a meeting and dictation never load the model twice.
 
-- **Menu bar** (Mac): a microphone icon shows the state (hourglass loading, mic ready, red mic recording, waveform transcribing, crossed-out mic paused, triangle after an error). Its menu has the last 10 dictations (click one to copy it), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app in the menu bar, recording included; **Quit** (or ⌘Q) really quits.
+- **Menu bar** (Mac): a microphone icon shows the state (hourglass loading, mic ready, red mic recording, waveform transcribing, crossed-out mic paused, triangle after an error). Its menu has the last 10 dictations (click one to copy it), **Take a screenshot**, **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app in the menu bar, recording included; **Quit** (or ⌘Q) really quits.
 - **History**: the sidebar's **Dictation** tab lists every recording by day, with its text; open one to read, play (in the system's audio player) or copy it. Recordings are WAV files (16 kHz mono) with a `.txt` of the same name. They go to `Dictation` in the app data folder (`~/Library/Application Support/Meeting Transcriber/Dictation` on the Mac; see [Windows and Linux](#windows-and-linux) for the others). The folder can be changed in Settings.
 - **One copy dictates**: a second copy of Meeting Transcriber (one run from a build folder, say) stays paused while the first one dictates.
 - **Clean-up** (off by default): a language model fixes punctuation and Chinese/English spacing. If it fails or is slow, the text is pasted as Whisper wrote it. **Settings → Dictation** picks the service:
@@ -245,7 +247,7 @@ Dictation is served before meeting audio by the same Whisper engine, so a meetin
 - **Hotkey**: Right Ctrl by default, seen in every app through a low-level keyboard hook; no permission is needed. Windows drops such a hook without a word if it is ever slow to answer, so the app puts it back every 30 seconds. Right Alt is offered too, but on many keyboard layouts it is AltGr, which types characters. **Record keys…** takes any other key or combination (hold it, then let go); a combination's keys are kept from the app in front while it is held.
 - **Pasting** presses Ctrl+V. Windows does not let an app type into one running as administrator, so in such a window the text is only copied: press Ctrl+V yourself.
 - **Sounds** are the system's *Device Connect* (start), *Notification* (done) and *Critical Stop* (error), as set in **Settings → System → Sound → More sound settings**. Like everything the PC plays, they are part of a meeting's *Others* track while you record one.
-- **Tray**: the icon in the notification area is a coloured microphone (green ready, red recording, amber transcribing, grey paused or loading, crimson `!` after an error). Left-click opens the window; right-click shows the last 10 dictations (click to copy), **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app there; Windows may tuck the icon under the **^** arrow, and **Settings → Personalization → Taskbar → Other system tray icons** keeps it in view.
+- **Tray**: the icon in the notification area is a coloured microphone (green ready, red recording, amber transcribing, grey paused or loading, crimson `!` after an error). Left-click opens the window; right-click shows the last 10 dictations (click to copy), **Take a screenshot**, **Pause dictation**, **Open Meeting Transcriber** and **Quit**. Closing the window keeps the app there; Windows may tuck the icon under the **^** arrow, and **Settings → Personalization → Taskbar → Other system tray icons** keeps it in view.
 - **Open at login** adds *Meeting Transcriber* to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, pointing at the `.exe` where it is now, started with `--hidden` (in the tray). It also appears in **Task Manager → Startup apps**. Move the `.exe` and switch it off and on again.
 
 ### Linux
@@ -289,6 +291,18 @@ Open **Settings** at the bottom of the sidebar. The app remembers your choices i
 | Me / Others | Turn off a source you don't need. |
 | Remove speaker echo | See above. |
 | Dictation | On or off, **Paused**, the hotkey (Right Option, Command, Control or Shift on the Mac; Right Ctrl, Alt, Windows/Super or Shift elsewhere; F13–F20, or **Record keys…** for any other key or combination: hold it, then let go (on Windows a combination's keys are kept from the app in front while held); on Wayland the desktop's shortcut), language, an optional initial prompt (names, simplified Chinese, …), paste automatically, sounds, keep recordings and their folder, the shortest and longest clip, clean-up (service, URL, model, API key, timeout; see [Dictation](#dictation)), and **Open at login**. |
+| Screenshots | The screenshot hotkey (`capture_hotkey`; ⌘⇧2 on the Mac, Ctrl+Shift+2 elsewhere): **Record keys…** takes any combination, **Reset** goes back to the default. |
+
+## Screenshots and screen recording
+
+Press **⌘⇧2** on the Mac (**Ctrl+Shift+2** on Windows and Linux) in any app, or **📷 Screenshot** at the bottom of the sidebar, the 📷 button above the notes, or **Take a screenshot** in the menu bar or tray menu. The display under the mouse freezes, dimmed:
+
+- **Choose**: drag over what to keep; its size in pixels shows beside it. Before you drag, the window under the mouse lights up, and a click takes it (or the whole display where there is no window). Drag the handles to change the selection, or inside it to move it; right-click drops it (and cancels when there is none).
+- **Keep**: **Copy** (Enter, or double-click inside the selection) puts the picture on the clipboard and saves it; **Save** saves it without copying; **Cancel** (Esc) closes it.
+- **Where it goes**: with a meeting open in the window (recording or not), into a folder beside its file, `<meeting file name> files/Screenshot 12-03.png` (the meeting's clock while recording, else the time of day), and a line is added to its notes: `![Screenshot 12:03](2026-10-29%2014-05%20Weekly%20sync%20files/Screenshot%2012-03.png)`, which Obsidian and other Markdown apps show as the picture. A new meeting gets its file then. With no meeting open (or an old `.txt` transcript), into `Screenshots` in the meetings folder, named by date and time.
+- **In the notes**: the pictures they link show small above them; click one to open it.
+
+On the Mac the app's own windows are left out of the picture, and the overlay covers the menu bar and the Dock. Screenshots need the **Screen & System Audio Recording** permission (the same as *Others*), and the hotkey needs **Input Monitoring** (the same as dictation); ⌘⇧2 still reaches the app in front, which mostly does nothing with it. On macOS 13 the picture is taken with Quartz and includes the app's windows. On Windows the window hides for a moment when you use its button, and the 2 of Ctrl+Shift+2 is kept from the app in front. On Linux screenshots work on X11 (the monitor under the mouse; no window highlighting); Wayland lets no app read the screen this way, so they are not supported there yet.
 
 ## Import a recording
 
@@ -384,16 +398,16 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, the language-model clean-up |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
-| `src/app/meeting_page.rs` | Record button, title, tags, notes, footer actions |
+| `src/app/meeting_page.rs` | Record button, title, tags, notes (with their pictures), footer actions |
 | `src/app/reader.rs` | Transcript reader: filter by speaker, rename speakers, find, copy |
 | `src/app/library.rs` | Open meeting: autosave, rename, delete, convert, export |
 | `src/app/settings_page.rs` | Models, folders, recognition options |
 | `src/app/dictation.rs` | Dictation in the window: hotkey, engine hand-over, menu bar item, closing to the menu bar |
 | `src/app/dictation_page.rs` | Dictation banners, history in the sidebar, the Dictation page and its Settings card |
 | `src/app/path_prompt.rs` | Typing a folder's path when there is no folder dialog |
-| `src/app/sidebar.rs` | Meetings / Dictation, New meeting, search, the lists, Settings |
+| `src/app/sidebar.rs` | Meetings / Dictation, New meeting, search, the lists, Screenshot, Settings |
 | `src/app/theme.rs` | Colours, spacing and fonts for dark and light mode |
-| `src/platform/` | What differs per system: file manager, folder dialog, wording, console; for dictation the hotkey, pasting, sounds, the menu bar or tray item and the login item. `macos/`: Quartz event tap, ⌘V, NSStatusItem, launchd. `windows/`: keyboard hook, SendInput, Shell_NotifyIcon, the Run key. `linux/`: XInput 2 / XTest, the shortcuts portal, the `dictate` socket, a StatusNotifierItem, autostart. `shared.rs`: their plain logic (tray menu and icon, login entries, socket commands), tested on every system |
+| `src/platform/` | What differs per system: file manager, folder dialog, wording, console; for dictation the hotkey (which also watches press shortcuts such as the screenshot hotkey), pasting, sounds, the menu bar or tray item and the login item. `macos/`: Quartz event tap, ⌘V, NSStatusItem, launchd. `windows/`: keyboard hook, SendInput, Shell_NotifyIcon, the Run key. `linux/`: XInput 2 / XTest, the shortcuts portal, the `dictate` socket, a StatusNotifierItem, autostart. `shared.rs`: their plain logic (tray menu and icon, login entries, socket commands), tested on every system |
 | `src/models.rs` | Model list, folders, download and moving |
 | `src/settings.rs` | Saved settings |
 | `src/meeting.rs` | The Markdown meeting format (and old `.txt` transcripts) |
@@ -402,6 +416,10 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/media.rs` | Reading the sound of audio and video files (Symphonia) |
 | `src/import.rs` | Importing a recording: speakers told apart (speakrs), their turns transcribed, the meeting file |
 | `src/app/importing.rs` | Import in the window: the button, dropped files, progress in the sidebar |
+| `src/capture/` | Screenshots: grabbing the display under the mouse and its windows (`macos.rs`: ScreenCaptureKit and Quartz; `windows.rs`: GDI and DWM; `linux.rs`: X11), and their plain logic, tested on every system: pictures and PNG (`image.rs`), the selection's geometry (`select.rs`), file names and note links (`files.rs`) |
+| `src/app/capture.rs` | Screenshots in the window: the hotkey, buttons and menu item, saving beside the meeting with a line in its notes, the Settings card |
+| `src/app/overlay.rs` | The full-screen overlay: selection, handles, window highlight, toolbar |
+| `src/app/thumbnails.rs` | The pictures the notes link, shown small above them |
 | `scripts/` | macOS `.app` bundle, Linux install and `.tar.gz`, Windows `.zip` |
 | `assets/` | Linux launcher (`.desktop`) and icon |
 

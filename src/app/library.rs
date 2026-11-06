@@ -193,7 +193,7 @@ impl App {
     }
 
     /// A new meeting gets a file once it has something in it.
-    fn worth_a_file(&self) -> bool {
+    pub(super) fn worth_a_file(&self) -> bool {
         let m = &self.open.meeting;
         self.recording()
             || !self.transcript.is_empty()

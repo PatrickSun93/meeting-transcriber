@@ -59,6 +59,10 @@ Transcripts go to `Documents/Meeting Transcripts` unless changed in Settings
   (no CUDA toolkit is needed; the driver is enough), used after a restart.
 - **Hotkey does nothing**: compare `doctor`'s `hotkey` with what `keys`
   prints when the user presses it.
+- **Screenshots**: `doctor` shows `screenshot_hotkey` (setting
+  `capture_hotkey`) and where pictures go; `keys` marks the screenshot
+  hotkey. On the Mac they need `screen_recording` allowed for the app; on
+  Linux only X11 works. A failed screenshot shows its reason in the window.
 
 ## Developing
 
