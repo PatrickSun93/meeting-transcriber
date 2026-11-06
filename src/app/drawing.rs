@@ -1,5 +1,6 @@
 //! Drawing on the screenshot overlay: the tools (rectangle, ellipse, arrow,
-//! pen, text and mosaic) with their colour and size, drawing and moving
+//! pen, text and mosaic) with their colour and size (each tool its own,
+//! remembered in the Settings), drawing and moving
 //! marks with the pointer, typing a text, undo and redo, and showing the
 //! marks as they will be kept. The marks and their geometry are
 //! `capture::annotate`; `capture::raster` draws them onto the picture.
@@ -14,29 +15,12 @@ use eframe::egui::{
 use crate::capture::annotate::{self, Mark, Marks, Rgba, Shape};
 use crate::capture::image::Image;
 use crate::capture::select::{Mapping, PxRect};
+use crate::settings::{DrawStyle, ToolStyle};
 
 /// A drawing tool on the toolbar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
-    Rectangle,
-    Ellipse,
-    Arrow,
-    Pen,
-    Text,
-    Mosaic,
-}
+pub(super) use crate::capture::annotate::Tool as Kind;
 
 impl Kind {
-    /// Left to right.
-    const ALL: [Kind; 6] = [
-        Kind::Rectangle,
-        Kind::Ellipse,
-        Kind::Arrow,
-        Kind::Pen,
-        Kind::Text,
-        Kind::Mosaic,
-    ];
-
     fn hint(self) -> &'static str {
         match self {
             Kind::Rectangle => "Rectangle (R)",
@@ -60,7 +44,7 @@ impl Kind {
     }
 }
 
-/// The colours to draw in.
+/// The colours to draw in (`settings::DRAW_COLORS` names them).
 const PALETTE: [Rgba; 6] = [
     [235, 50, 50, 255],
     [255, 200, 0, 255],
@@ -110,8 +94,8 @@ pub(super) struct Drawing {
     pub marks: Marks,
     /// The tool in use; without one, drags move marks or the selection.
     pub kind: Option<Kind>,
-    color: usize,
-    size: usize,
+    /// Each tool's colour and size.
+    styles: DrawStyle,
     doing: Doing,
     typing: Option<Typing>,
     /// The mark last drawn or clicked, which Delete removes.
@@ -122,13 +106,13 @@ pub(super) struct Drawing {
     mosaics: HashMap<[u32; 5], Vec<(PxRect, Rgba)>>,
 }
 
-impl Default for Drawing {
-    fn default() -> Self {
+impl Drawing {
+    /// With `kind` in use at first, and each tool's colour and size.
+    pub fn new(kind: Option<Kind>, styles: DrawStyle) -> Self {
         Self {
             marks: Marks::default(),
-            kind: None,
-            color: 0,
-            size: 1,
+            kind,
+            styles,
             doing: Doing::Nothing,
             typing: None,
             picked: None,
@@ -136,9 +120,21 @@ impl Default for Drawing {
             mosaics: HashMap::new(),
         }
     }
-}
 
-impl Drawing {
+    /// Each tool's colour and size as last used.
+    pub fn style(&self) -> DrawStyle {
+        self.styles
+    }
+
+    /// The colour and size of `kind`, kept to the toolbar's.
+    fn style_of(&self, kind: Kind) -> ToolStyle {
+        let ToolStyle { color, size } = self.styles.get(kind);
+        ToolStyle {
+            color: color.min(PALETTE.len() - 1),
+            size: size.min(WIDTHS.len() - 1),
+        }
+    }
+
     /// Called first each frame, with how the overlay maps to pixels.
     pub fn begin(&mut self, map: &Mapping) {
         self.ppp = map.pixels_per_point().max(0.25);
@@ -185,13 +181,14 @@ impl Drawing {
             Kind::Arrow => Shape::Arrow { from: p, to: p },
             Kind::Pen | Kind::Text => Shape::Pen(vec![p]),
         };
+        let style = self.style_of(kind);
         let size = match kind {
-            Kind::Mosaic => BLOCKS[self.size],
-            _ => WIDTHS[self.size],
+            Kind::Mosaic => BLOCKS[style.size],
+            _ => WIDTHS[style.size],
         } * self.ppp;
         let mark = Mark {
             shape,
-            color: PALETTE[self.color],
+            color: PALETTE[style.color],
             size,
         };
         self.doing = Doing::Drawing { mark, start: p };
@@ -255,11 +252,12 @@ impl Drawing {
 
     fn start_text(&mut self, at: Pos2) {
         self.picked = None;
+        let style = self.style_of(Kind::Text);
         self.typing = Some(Typing {
             at,
             text: String::new(),
-            color: PALETTE[self.color],
-            size: TEXT_SIZES[self.size],
+            color: PALETTE[style.color],
+            size: TEXT_SIZES[style.size],
             focused: false,
         });
     }
@@ -486,11 +484,15 @@ impl Drawing {
 
     /// The colours (not for mosaic) and sizes, for the tool in use.
     pub fn style_buttons(&mut self, ui: &mut Ui) {
-        if self.kind != Some(Kind::Mosaic) {
+        let Some(kind) = self.kind else {
+            return;
+        };
+        let style = self.style_of(kind);
+        if kind != Kind::Mosaic {
             for (i, color) in PALETTE.into_iter().enumerate() {
                 let (rect, response) = ui.allocate_exact_size(Vec2::splat(BUTTON - 6.0), Sense::click());
                 let painter = ui.painter();
-                if i == self.color {
+                if i == style.color {
                     painter.circle_stroke(
                         rect.center(),
                         9.5,
@@ -500,7 +502,7 @@ impl Drawing {
                 painter.circle_filled(rect.center(), 7.0, color32(color));
                 painter.circle_stroke(rect.center(), 7.0, Stroke::new(1.0, Color32::from_gray(110)));
                 if response.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                    self.color = i;
+                    self.styles.set(kind, ToolStyle { color: i, ..style });
                     if let Some(typing) = &mut self.typing {
                         typing.color = color;
                     }
@@ -511,25 +513,26 @@ impl Drawing {
         for (i, dot) in [2.5f32, 4.0, 6.0].into_iter().enumerate() {
             let (rect, response) = ui.allocate_exact_size(Vec2::splat(BUTTON - 6.0), Sense::click());
             let visuals = ui.visuals();
-            if i == self.size {
+            if i == style.size {
                 ui.painter().rect_filled(rect, 4.0, visuals.selection.bg_fill);
             } else if response.hovered() {
                 ui.painter().rect_filled(rect, 4.0, visuals.widgets.hovered.bg_fill);
             }
             ui.painter().circle_filled(rect.center(), dot, visuals.text_color());
-            let what = match (self.kind, i) {
-                (Some(Kind::Text), 0) => "Small text",
-                (Some(Kind::Text), 1) => "Medium text",
-                (Some(Kind::Text), _) => "Large text",
-                (Some(Kind::Mosaic), 0) => "Small blocks",
-                (Some(Kind::Mosaic), 1) => "Medium blocks",
-                (Some(Kind::Mosaic), _) => "Large blocks",
+            let what = match (kind, i) {
+                (Kind::Text, 0) => "Small text",
+                (Kind::Text, 1) => "Medium text",
+                (Kind::Text, _) => "Large text",
+                (Kind::Mosaic, 0) => "Small blocks",
+                (Kind::Mosaic, 1) => "Medium blocks",
+                (Kind::Mosaic, _) => "Large blocks",
                 (_, 0) => "Thin",
                 (_, 1) => "Medium",
                 _ => "Thick",
             };
             if response.on_hover_text(what).clicked() {
-                self.size = i;
+                let color = self.style_of(kind).color;
+                self.styles.set(kind, ToolStyle { color, size: i });
                 if let Some(typing) = &mut self.typing {
                     typing.size = TEXT_SIZES[i];
                 }
@@ -690,5 +693,36 @@ fn paint_icon(painter: &Painter, r: Rect, icon: Icon, color: Color32) {
             let head = [end + vec2(0.0, 4.0), end + vec2(-3.5, -1.0), end + vec2(3.5, -1.0)];
             painter.add(egui::Shape::convex_polygon(head.to_vec(), color, Stroke::NONE));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{Choice as _, DRAW_COLORS, DRAW_SIZES};
+
+    #[test]
+    fn the_settings_name_the_toolbar_colours_and_sizes() {
+        assert_eq!(PALETTE.len(), DRAW_COLORS.len());
+        assert_eq!(WIDTHS.len(), DRAW_SIZES.len());
+        assert_eq!(TEXT_SIZES.len(), DRAW_SIZES.len());
+        assert_eq!(BLOCKS.len(), DRAW_SIZES.len());
+        assert_eq!(
+            Kind::ALL.map(|k| k.id()),
+            ["rectangle", "ellipse", "arrow", "pen", "text", "mosaic"]
+        );
+    }
+
+    #[test]
+    fn each_tool_keeps_its_own_style_and_bad_ones_are_kept_in_range() {
+        let mut styles = DrawStyle::default();
+        styles.set(Kind::Pen, ToolStyle { color: 3, size: 2 });
+        styles.set(Kind::Text, ToolStyle { color: 40, size: 9 });
+        let drawing = Drawing::new(Some(Kind::Arrow), styles);
+        assert_eq!(drawing.kind, Some(Kind::Arrow));
+        assert_eq!(drawing.style_of(Kind::Pen), ToolStyle { color: 3, size: 2 });
+        assert_eq!(drawing.style_of(Kind::Arrow), ToolStyle::default());
+        assert_eq!(drawing.style_of(Kind::Text), ToolStyle { color: 5, size: 2 });
+        assert_eq!(drawing.style(), styles);
     }
 }

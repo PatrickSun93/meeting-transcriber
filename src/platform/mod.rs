@@ -116,10 +116,32 @@ pub enum KeyEvent {
 }
 
 /// A shortcut that does something once when pressed, watched next to
-/// dictation's hold-to-talk hotkey.
+/// dictation's hold-to-talk hotkey: each opens the screenshot overlay, with
+/// its own main action (what Enter does there).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Press {
     Screenshot,
+    /// A scrolling screenshot.
+    Scroll,
+    /// A screen recording; pressed while recording, it stops it.
+    Record,
+    Pin,
+}
+
+impl Press {
+    /// In the order Settings lists them; when two have the same keys, the
+    /// first one wins.
+    pub const ALL: [Press; 4] = [Press::Screenshot, Press::Scroll, Press::Record, Press::Pin];
+
+    /// What its hotkey is called in the window and on the command line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Press::Screenshot => "screenshot",
+            Press::Scroll => "scrolling screenshot",
+            Press::Record => "screen recording",
+            Press::Pin => "pin",
+        }
+    }
 }
 
 /// The running hotkey watcher's settings, shared with its thread.
@@ -156,13 +178,25 @@ impl HotkeyWatch {
         self.presses.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The keys `press` is watched for, if it is.
+    pub fn press(&self, press: Press) -> Option<Shortcut> {
+        let presses = self.presses.lock().unwrap_or_else(|e| e.into_inner());
+        presses.iter().find(|(p, _)| *p == press).map(|(_, key)| key.clone())
+    }
+
     /// Watches `key` too, reporting `Pressed(press)` each time it goes down
-    /// (not while capturing). Not on Wayland, where the desktop decides.
-    pub fn set_press(&self, press: Press, key: Shortcut) {
+    /// (not while capturing); None stops watching for `press` (its hotkey
+    /// is off). Not on Wayland, where the desktop decides.
+    pub fn set_press(&self, press: Press, key: Option<Shortcut>) {
         let mut presses = self.presses.lock().unwrap_or_else(|e| e.into_inner());
-        match presses.iter_mut().find(|(p, _)| *p == press) {
-            Some(entry) => entry.1 = key,
-            None => presses.push((press, key)),
+        let at = presses.iter().position(|(p, _)| *p == press);
+        match (at, key) {
+            (Some(i), Some(key)) => presses[i].1 = key,
+            (None, Some(key)) => presses.push((press, key)),
+            (Some(i), None) => {
+                presses.remove(i);
+            }
+            (None, None) => {}
         }
     }
 
@@ -188,8 +222,11 @@ impl PressTracker {
     /// Takes in a key going down or up; the press shortcuts it completed.
     pub(crate) fn key(&mut self, codes: &Codes, watch: &HotkeyWatch, code: u32, down: bool) -> Vec<Press> {
         let capturing = watch.capturing();
+        let presses = watch.presses();
+        // A press switched off starts afresh if it is switched on again.
+        self.trackers.retain(|(p, _)| presses.iter().any(|(q, _)| q == p));
         let mut pressed = Vec::new();
-        for (press, key) in watch.presses() {
+        for (press, key) in presses {
             let i = match self.trackers.iter().position(|(p, _)| *p == press) {
                 Some(i) => i,
                 None => {
@@ -258,14 +295,18 @@ pub struct TrayMenu {
     pub paused: bool,
     /// A screen recording is going on: the screenshot item stops it.
     pub recording_screen: bool,
+    /// A screenshot's countdown is going on: the screenshot item cancels it.
+    pub counting_down: bool,
 }
 
 impl TrayMenu {
     /// The screenshot item's text; while the screen is recorded, it stops
-    /// that (as the screenshot hotkey does).
+    /// that (as the capture hotkeys do), and during a countdown cancels it.
     pub fn screenshot_label(&self) -> &'static str {
         if self.recording_screen {
             "Stop screen recording"
+        } else if self.counting_down {
+            "Cancel the screenshot"
         } else {
             "Take a screenshot"
         }
@@ -513,12 +554,45 @@ mod tests {
         assert_eq!(watch.system_key(), None);
         thread_side.set_system_key(Some("Ctrl+Alt+D".into()));
         assert_eq!(watch.system_key().as_deref(), Some("Ctrl+Alt+D"));
-        watch.set_press(Press::Screenshot, Hotkey::F(14).into());
-        watch.set_press(Press::Screenshot, Hotkey::F(15).into());
+        watch.set_press(Press::Screenshot, Some(Hotkey::F(14).into()));
+        watch.set_press(Press::Screenshot, Some(Hotkey::F(15).into()));
         assert_eq!(
             thread_side.presses(),
             [(Press::Screenshot, Shortcut::from(Hotkey::F(15)))]
         );
+        watch.set_press(Press::Pin, Some(Hotkey::F(16).into()));
+        assert_eq!(thread_side.press(Press::Pin), Some(Shortcut::from(Hotkey::F(16))));
+        // Off: no longer watched; switching off one not watched does nothing.
+        watch.set_press(Press::Screenshot, None);
+        watch.set_press(Press::Record, None);
+        assert_eq!(thread_side.presses(), [(Press::Pin, Shortcut::from(Hotkey::F(16)))]);
+        assert_eq!(thread_side.press(Press::Screenshot), None);
+    }
+
+    #[test]
+    fn several_press_shortcuts_are_followed_each_on_its_own() {
+        use crate::dictation::hotkey::win;
+        let watch = HotkeyWatch::default();
+        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+shift+vk:50"));
+        watch.set_press(Press::Record, Shortcut::parse("ctrl+shift+vk:51"));
+        watch.set_press(Press::Pin, Some(Hotkey::F(13).into()));
+        let mut presses = PressTracker::default();
+        let mut feed = |code: u32, down: bool| presses.key(&win::CODES, &watch, code, down);
+        feed(0xA2, true);
+        feed(0xA0, true);
+        assert_eq!(feed(0x33, true), [Press::Record]);
+        feed(0x33, false);
+        assert_eq!(feed(0x32, true), [Press::Screenshot]);
+        feed(0x32, false);
+        feed(0xA0, false);
+        feed(0xA2, false);
+        // F13 (0x7C on Windows) alone.
+        assert_eq!(feed(0x7C, true), [Press::Pin]);
+        feed(0x7C, false);
+        // Switched off, a press is not reported any more.
+        watch.set_press(Press::Pin, None);
+        let mut presses = PressTracker::default();
+        assert!(presses.key(&win::CODES, &watch, 0x7C, true).is_empty());
     }
 
     #[test]
@@ -526,7 +600,7 @@ mod tests {
         use crate::dictation::hotkey::win;
         let watch = HotkeyWatch::default();
         // Ctrl+Shift+2.
-        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+shift+vk:50").unwrap());
+        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+shift+vk:50"));
         let mut presses = PressTracker::default();
         let mut feed = |code: u32, down: bool| presses.key(&win::CODES, &watch, code, down);
         assert!(feed(0xA2, true).is_empty());
@@ -546,7 +620,7 @@ mod tests {
     fn the_plain_key_of_a_held_press_combination_is_known() {
         use crate::dictation::hotkey::win;
         let watch = HotkeyWatch::default();
-        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+vk:50").unwrap());
+        watch.set_press(Press::Screenshot, Shortcut::parse("ctrl+vk:50"));
         let mut presses = PressTracker::default();
         presses.key(&win::CODES, &watch, 0xA2, true);
         assert!(!presses.holds_plain_key(&win::CODES, &watch, 0x32));

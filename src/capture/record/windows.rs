@@ -1,5 +1,6 @@
 //! Screen recording on Windows: the area copied from the screen with GDI
-//! 30 times a second, with the pointer drawn in (and scaled down by GDI
+//! 15, 30 or 60 times a second, with the pointer drawn in unless it is
+//! left out (and scaled down by GDI
 //! when the video is smaller than the area), made NV12 (`nv12.rs`), and
 //! encoded by Media Foundation's sink writer into the MP4 file: H.264, and
 //! AAC for the sound, the PC's sound and the microphone mixed into one
@@ -41,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{GUID, HRESULT, HSTRING, Interface, PCSTR, PCWSTR, s, w};
 
 use super::mixer::Mixer;
-use super::{FPS, FrameClock, Recorded, Sound, bitrate, nv12, scaled_down, timer, video_size};
+use super::{FrameClock, Options, Recorded, bitrate, nv12, scaled_down, timer, video_size};
 use crate::audio::{self, AudioPacket};
 use crate::capture::scrolling::Area;
 use crate::transcript::Speaker;
@@ -72,7 +73,7 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn start(area: &Area, path: &Path, sound: Sound) -> Result<Recorder> {
+    pub fn start(area: &Area, path: &Path, options: Options) -> Result<Recorder> {
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(Mutex::new(None));
         let (ready_tx, ready) = crossbeam_channel::bounded(1);
@@ -81,7 +82,7 @@ impl Recorder {
         let thread = std::thread::Builder::new()
             .name("screen recording".into())
             .spawn(move || {
-                let result = run(&area, &path, sound, &thread_stop, &ready_tx);
+                let result = run(&area, &path, options, &thread_stop, &ready_tx);
                 if let Err(e) = &result {
                     let why = format!("{e:#}");
                     *thread_failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.clone());
@@ -113,7 +114,7 @@ impl Recorder {
 }
 
 /// The recording's thread: Media Foundation on, the recording, and off.
-fn run(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sender<Result<()>>) -> Result<Recorded> {
+fn run(area: &Area, path: &Path, options: Options, stop: &AtomicBool, ready: &Sender<Result<()>>) -> Result<Recorded> {
     let mf = MediaFoundation::load()?;
     // SAFETY: COM and Media Foundation are started and stopped on this
     // thread, in pairs; what the recording made is gone before they stop.
@@ -123,7 +124,7 @@ fn run(area: &Area, path: &Path, sound: Sound, stop: &AtomicBool, ready: &Sender
             .ok()
             .context(NO_MEDIA_FOUNDATION)
             .and_then(|()| {
-                let recorded = record(&mf, area, path, sound, stop, ready);
+                let recorded = record(&mf, area, path, options, stop, ready);
                 let _ = (mf.shutdown)();
                 recorded
             });
@@ -138,13 +139,14 @@ fn record(
     mf: &MediaFoundation,
     area: &Area,
     path: &Path,
-    sound: Sound,
+    options: Options,
     stop: &AtomicBool,
     ready: &Sender<Result<()>>,
 ) -> Result<Recorded> {
     let [left, top, right, bottom] = area.desktop();
     let size = video_size((right - left) as u32, (bottom - top) as u32);
-    let mut screen = Screen::new([left, top], [right - left, bottom - top], size)?;
+    let mut screen = Screen::new([left, top], [right - left, bottom - top], size, options.cursor)?;
+    let sound = options.sound;
     // The sound first: whether there is any decides the file's tracks.
     let (tx, packets) = crossbeam_channel::unbounded();
     let mut sources = Vec::new();
@@ -156,11 +158,11 @@ fn record(
             }
         }
     }
-    let writer = Writer::new(mf, path, size, !sources.is_empty())?;
+    let writer = Writer::new(mf, path, size, options, !sources.is_empty())?;
     let _ = ready.send(Ok(()));
 
     let started = Instant::now();
-    let mut clock = FrameClock::new(FPS);
+    let mut clock = FrameClock::new(options.fps());
     let lag = samples(AUDIO_LAG);
     let mut mixer = Mixer::new(2, lag);
     // When the last frame was taken, once one was.
@@ -234,11 +236,13 @@ struct Screen {
     /// The video is the area scaled down; else its top-left part (all but
     /// an odd last column or row), copied pixel for pixel.
     scaled: bool,
+    /// The pointer is drawn in.
+    cursor: bool,
     pixels: Vec<u8>,
 }
 
 impl Screen {
-    fn new(origin: [i32; 2], source: [i32; 2], size: [u32; 2]) -> Result<Screen> {
+    fn new(origin: [i32; 2], source: [i32; 2], size: [u32; 2], cursor: bool) -> Result<Screen> {
         let scaled = scaled_down([source[0] as u32, source[1] as u32], size);
         // SAFETY: each handle is checked here and released in `drop`.
         unsafe {
@@ -256,6 +260,7 @@ impl Screen {
                 source,
                 size,
                 scaled,
+                cursor,
                 pixels: vec![0; size[0] as usize * size[1] as usize * 4],
             };
             if memory.is_invalid() || bitmap.is_invalid() {
@@ -268,7 +273,8 @@ impl Screen {
         }
     }
 
-    /// The area as it is now, with the pointer: BGRA, rows from the top.
+    /// The area as it is now, with the pointer unless it is left out: BGRA,
+    /// rows from the top.
     fn grab(&mut self) -> Result<&[u8]> {
         let ([x, y], [sw, sh]) = (self.origin, self.source);
         let (w, h) = (self.size[0] as i32, self.size[1] as i32);
@@ -297,7 +303,7 @@ impl Screen {
             } else {
                 BitBlt(self.memory, 0, 0, w, h, Some(self.screen), x, y, SRCCOPY).is_ok()
             };
-            if copied {
+            if copied && self.cursor {
                 self.draw_pointer();
             }
             let _ = SelectObject(self.memory, old);
@@ -518,7 +524,8 @@ struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-    fn new(mf: &'a MediaFoundation, path: &Path, size: [u32; 2], sound: bool) -> Result<Writer<'a>> {
+    fn new(mf: &'a MediaFoundation, path: &Path, size: [u32; 2], options: Options, sound: bool) -> Result<Writer<'a>> {
+        let fps = options.fps();
         let made = || -> windows::core::Result<Writer<'a>> {
             // SAFETY: Media Foundation's documented calls, with types it
             // made; the writer keeps what it needs.
@@ -527,11 +534,11 @@ impl<'a> Writer<'a> {
                 attributes.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)?;
                 let writer = mf.sink_writer(path, &attributes)?;
 
-                let encoded = video_type(mf, &MFVideoFormat_H264, size)?;
-                encoded.SetUINT32(&MF_MT_AVG_BITRATE, bitrate(size))?;
+                let encoded = video_type(mf, &MFVideoFormat_H264, size, fps)?;
+                encoded.SetUINT32(&MF_MT_AVG_BITRATE, bitrate(size, fps, options.quality))?;
                 encoded.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main.0 as u32)?;
                 let video = writer.AddStream(&encoded)?;
-                let frames = video_type(mf, &MFVideoFormat_NV12, size)?;
+                let frames = video_type(mf, &MFVideoFormat_NV12, size, fps)?;
                 frames.SetUINT32(&MF_MT_DEFAULT_STRIDE, size[0])?;
                 writer.SetInputMediaType(video, &frames, None)?;
 
@@ -618,11 +625,16 @@ fn pair(high: u32, low: u32) -> u64 {
     (u64::from(high) << 32) | u64::from(low)
 }
 
-/// A video type of `subtype`, `size`, 30 frames a second, BT.709 colours.
+/// A video type of `subtype`, `size`, `fps` frames a second, BT.709 colours.
 ///
 /// # Safety
 /// Media Foundation is started.
-unsafe fn video_type(mf: &MediaFoundation, subtype: &GUID, size: [u32; 2]) -> windows::core::Result<IMFMediaType> {
+unsafe fn video_type(
+    mf: &MediaFoundation,
+    subtype: &GUID,
+    size: [u32; 2],
+    fps: u32,
+) -> windows::core::Result<IMFMediaType> {
     // SAFETY: setting attributes of a type made here.
     unsafe {
         let kind = mf.media_type()?;
@@ -630,7 +642,7 @@ unsafe fn video_type(mf: &MediaFoundation, subtype: &GUID, size: [u32; 2]) -> wi
         kind.SetGUID(&MF_MT_SUBTYPE, subtype)?;
         kind.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
         kind.SetUINT64(&MF_MT_FRAME_SIZE, pair(size[0], size[1]))?;
-        kind.SetUINT64(&MF_MT_FRAME_RATE, pair(FPS, 1))?;
+        kind.SetUINT64(&MF_MT_FRAME_RATE, pair(fps, 1))?;
         kind.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pair(1, 1))?;
         kind.SetUINT32(&MF_MT_YUV_MATRIX, MFVideoTransferMatrix_BT709.0 as u32)?;
         kind.SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, MFNominalRange_16_235.0 as u32)?;

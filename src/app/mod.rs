@@ -2,6 +2,7 @@
 //! Pages live in their own modules.
 
 mod capture;
+mod capture_settings;
 mod dictation;
 mod dictation_page;
 mod drawing;
@@ -27,6 +28,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui::{self, RichText};
 
+use crate::capture::files::Kind;
 use crate::chunker::ChunkerConfig;
 use crate::models::{self, DEFAULT_MODEL, ModelInfo};
 use crate::platform;
@@ -94,7 +96,11 @@ enum SidebarTab {
 enum Folder {
     Models,
     Meetings,
+    /// Dictation's.
     Recordings,
+    /// Screenshots and screen recordings not into a meeting.
+    Screenshots,
+    ScreenRecordings,
 }
 
 struct Engine {
@@ -430,6 +436,14 @@ impl App {
             Folder::Models => models::configured_dir(),
             Folder::Meetings => self.meetings_dir_path(),
             Folder::Recordings => self.dict.settings.recordings_dir_path(),
+            Folder::Screenshots => self
+                .capture
+                .settings
+                .loose_dir(Kind::Screenshot, &self.meetings_dir_path()),
+            Folder::ScreenRecordings => self
+                .capture
+                .settings
+                .loose_dir(Kind::Recording, &self.meetings_dir_path()),
         }
     }
 
@@ -442,6 +456,8 @@ impl App {
             Folder::Models => "Choose a folder for Whisper models",
             Folder::Meetings => "Choose a folder for meeting transcripts",
             Folder::Recordings => "Choose a folder for dictation recordings",
+            Folder::Screenshots => "Choose a folder for screenshots",
+            Folder::ScreenRecordings => "Choose a folder for screen recordings",
         }
     }
 
@@ -458,6 +474,8 @@ impl App {
         match folder {
             Folder::Meetings => self.meetings_dir = setting,
             Folder::Recordings => self.dict.settings.recordings_dir = setting,
+            Folder::Screenshots => self.capture.settings.screenshots_dir = setting,
+            Folder::ScreenRecordings => self.capture.settings.recordings_dir = setting,
             // A running download writes into the current folder, so it would
             // end up left behind. The buttons are disabled meanwhile, but the
             // folder dialog may have been opened before the download started.

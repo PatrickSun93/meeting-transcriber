@@ -1,9 +1,8 @@
 //! A screen recording in the window: started with Record on the screenshot
 //! overlay, recorded on a thread of its own (`capture::record`), with a
 //! small window beside the area (the time so far, and Stop) and a thin
-//! outline around it, both left out of the video. Stop there, the
-//! screenshot hotkey, a Screenshot button or the menu bar (or tray) item
-//! stops it. The video goes beside the open meeting, with a line in its
+//! outline around it, both left out of the video. Stop there, a capture
+//! hotkey, a Screenshot button or the menu bar (or tray) item stops it. The video goes beside the open meeting, with a line in its
 //! notes, or into the Recordings folder; once it is done, a banner offers
 //! to open it, and to transcribe it when it has sound.
 
@@ -88,12 +87,12 @@ impl App {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = crossbeam_channel::unbounded();
         let (ctx, flag, file) = (self.ctx.clone(), stop.clone(), path.clone());
-        let sound = self.capture.settings.sound();
+        let options = self.capture.settings.record_options();
         let spawned = std::thread::Builder::new()
             .name("screen recording".into())
             .spawn(move || {
                 std::thread::sleep(START_WAIT);
-                let result = record::start(&area, &file, sound).and_then(|recorder| {
+                let result = record::start(&area, &file, options).and_then(|recorder| {
                     let _ = tx.send(Update::Started);
                     ctx.request_repaint();
                     while !flag.load(Ordering::Relaxed) && recorder.failure().is_none() {
@@ -292,8 +291,8 @@ impl App {
         ui.add_space(6.0);
         ui.label(RichText::new("Screen recording").strong());
         ui.weak(
-            "Record on the screenshot toolbar records the area as a video (MP4), until you press Stop beside it, \
-             the screenshot hotkey, or Stop screen recording in the menu.",
+            "Record on the screenshot toolbar (or the screen recording hotkey) records the area as a video \
+             (MP4), until you press Stop beside it, a capture hotkey, or Stop screen recording in the menu.",
         );
         if let Some(why) = record::unsupported() {
             ui.colored_label(ui.visuals().warn_fg_color, why);
@@ -304,6 +303,35 @@ impl App {
         ui.checkbox(&mut settings.record_microphone, "With the microphone");
         if !settings.sound().any() {
             ui.weak("Videos are made without sound, so they can't be transcribed.");
+        }
+        ui.checkbox(&mut settings.record_cursor, "With the pointer");
+        ui.horizontal(|ui| {
+            ui.label("Frames a second");
+            egui::ComboBox::from_id_salt("record_fps")
+                .selected_text(settings.record_fps.to_string())
+                .show_ui(ui, |ui| {
+                    for fps in record::FPS_CHOICES {
+                        ui.selectable_value(&mut settings.record_fps, fps, fps.to_string());
+                    }
+                })
+                .response
+                .on_hover_text("More is smoother and makes larger files; a slow computer may not keep up with 60.");
+        });
+        // The Mac's recording output offers no bitrate: it picks its own.
+        let mac = cfg!(target_os = "macos");
+        ui.horizontal(|ui| {
+            ui.label("Quality");
+            ui.add_enabled_ui(!mac, |ui| {
+                super::capture_settings::choice_combo(ui, "record_quality", &mut settings.record_quality)
+                    .on_hover_text("How many bits a second the video gets: Low is half of Normal, High twice.")
+                    .on_disabled_hover_text(
+                        "On the Mac the system's encoder picks the video's bitrate itself, and offers no setting \
+                         for it.",
+                    );
+            });
+        });
+        if mac {
+            ui.weak("The Mac's encoder picks the quality itself.");
         }
     }
 }
@@ -331,7 +359,7 @@ fn control(ui: &mut Ui, started: Option<Instant>, stopping: bool) -> bool {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 stop = ui
                     .add_enabled(!stopping, egui::Button::new("Stop"))
-                    .on_hover_text("Stop and save the video (or press the screenshot hotkey)")
+                    .on_hover_text("Stop and save the video (or press a capture hotkey)")
                     .clicked();
             });
         });

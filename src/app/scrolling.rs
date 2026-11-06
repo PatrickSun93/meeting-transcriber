@@ -14,7 +14,7 @@ use eframe::egui::{self, Key, RichText, Ui, Vec2, ViewportBuilder, ViewportComma
 use super::App;
 use super::capture::When;
 use super::overlay::{PLACE_FRAMES, beside, keep_at, outline};
-use crate::capture::scrolling::{self, Area, End, Long, MAX_HEIGHT, Progress, State};
+use crate::capture::scrolling::{self, Area, End, Long, Progress, State};
 use crate::capture::{hide_from_captures, raise_overlay};
 
 /// The control window's title, by which the system's window is found; the
@@ -35,6 +35,8 @@ enum Update {
 pub(super) struct Scrolling {
     area: Area,
     when: When,
+    /// The longest the picture gets, in pixels.
+    max_height: u32,
     stop: Arc<AtomicBool>,
     updates: Receiver<Update>,
     progress: Progress,
@@ -55,15 +57,17 @@ impl Scrolling {
 }
 
 impl App {
-    /// Starts a scrolling screenshot of `area`, on a thread.
+    /// Starts a scrolling screenshot of `area`, on a thread, going as the
+    /// Settings say.
     pub(super) fn start_scrolling(&mut self, area: Area, when: When) {
+        let options = self.capture.settings.scroll_options();
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = crossbeam_channel::unbounded();
         let (ctx, flag) = (self.ctx.clone(), stop.clone());
         let spawned = std::thread::Builder::new()
             .name("scrolling screenshot".into())
             .spawn(move || {
-                let result = scrolling::run(area, &flag, |p| {
+                let result = scrolling::run(area, options, &flag, |p| {
                     let _ = tx.send(Update::Progress(p));
                     ctx.request_repaint();
                 });
@@ -78,6 +82,7 @@ impl App {
         self.capture.scrolling = Some(Scrolling {
             area,
             when,
+            max_height: options.max_height(),
             stop,
             updates: rx,
             progress: Progress {
@@ -112,13 +117,13 @@ impl App {
         let Some(result) = done else {
             return;
         };
-        let (when, cancelled) = (scrolling.when, scrolling.cancelled);
+        let (when, cancelled, max_height) = (scrolling.when, scrolling.cancelled, scrolling.max_height);
         self.capture.scrolling = None;
         self.end_screenshot(ctx);
         match result {
             Ok(_) if cancelled => {}
             Ok(long) => {
-                let aside = (long.end == End::Limit).then(|| format!("it stopped at the {MAX_HEIGHT}-pixel limit"));
+                let aside = (long.end == End::Limit).then(|| format!("it stopped at the {max_height}-pixel limit"));
                 self.keep_screenshot(long.image, when, true, aside);
             }
             Err(e) => {
@@ -187,7 +192,7 @@ fn control(ui: &mut Ui, progress: Progress) -> Option<bool> {
         ui.horizontal(|ui| {
             if ui
                 .button("Stop")
-                .on_hover_text("Keep it: copied and saved (Esc, Enter, or the screenshot hotkey)")
+                .on_hover_text("Keep it: copied and saved (Esc, Enter, or a capture hotkey)")
                 .clicked()
             {
                 chosen = Some(true);

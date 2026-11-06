@@ -1,10 +1,10 @@
 //! A scrolling screenshot: an area of a display taken again and again
 //! while its content scrolls (by itself with the mouse wheel, or by hand),
 //! each picture stitched onto the last (`stitch.rs`), until the content
-//! stops moving at the end of the page, the picture reaches
-//! [`MAX_HEIGHT`], or the user stops it. Each system's backend reads the
-//! area and turns the wheel (`Region` in `macos.rs`, `windows.rs`,
-//! `linux.rs`).
+//! stops moving at the end of the page, the picture reaches its longest
+//! (`Options::max_height`, [`MAX_HEIGHT`] at first), or the user stops
+//! it. Each system's backend reads the area and turns the wheel (`Region`
+//! in `macos.rs`, `windows.rs`, `linux.rs`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -17,8 +17,10 @@ use super::imp::Region;
 use super::select::PxRect;
 use super::stitch::{Step, Stitcher};
 
-/// The longest a scrolling screenshot gets, in pixels.
+/// The longest a scrolling screenshot gets, in pixels, until another is chosen…
 pub const MAX_HEIGHT: u32 = 30_000;
+/// …from these.
+pub const MAX_HEIGHTS: std::ops::RangeInclusive<u32> = 2_000..=60_000;
 /// The shortest area that can be scrolled, in pixels: too few rows to
 /// compare below this.
 pub const MIN_HEIGHT: u32 = 48;
@@ -75,6 +77,43 @@ impl Area {
     }
 }
 
+/// How a scrolling screenshot goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Options {
+    /// How far the first turn of the wheel asks to go, as a part of the
+    /// area's height.
+    pub step: f32,
+    /// The longest the picture gets, in pixels.
+    pub max_height: u32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            step: 0.5,
+            max_height: MAX_HEIGHT,
+        }
+    }
+}
+
+impl Options {
+    /// The longest the picture gets, kept to `MAX_HEIGHTS`.
+    pub fn max_height(self) -> u32 {
+        self.max_height.clamp(*MAX_HEIGHTS.start(), *MAX_HEIGHTS.end())
+    }
+
+    /// How far the first turn of the wheel asks to go over an area
+    /// `height` pixels high: at least a pixel, at most the whole area.
+    pub fn first_step(self, height: u32) -> u32 {
+        let part = if self.step.is_finite() {
+            self.step.clamp(0.05, 1.0)
+        } else {
+            0.5
+        };
+        ((height as f32 * part) as u32).clamp(1, height.max(1))
+    }
+}
+
 /// What the scrolling is doing, for the window to say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -103,7 +142,7 @@ pub enum End {
     Stopped,
     /// The content stopped moving: the end of the page.
     Bottom,
-    /// The picture reached `MAX_HEIGHT`.
+    /// The picture reached its longest.
     Limit,
 }
 
@@ -114,9 +153,11 @@ pub struct Long {
 }
 
 /// Takes a scrolling screenshot of `area` until `stop` is set or it ends,
-/// telling `progress` after each picture. Blocking: called on a thread of
-/// its own. Fails when the area cannot be read (permission, Wayland).
-pub fn run(area: Area, stop: &AtomicBool, mut progress: impl FnMut(Progress)) -> Result<Long> {
+/// going as `options` say, telling `progress` after each picture.
+/// Blocking: called on a thread of its own. Fails when the area cannot be
+/// read (permission, Wayland).
+pub fn run(area: Area, options: Options, stop: &AtomicBool, mut progress: impl FnMut(Progress)) -> Result<Long> {
+    let max_height = options.max_height();
     std::thread::sleep(START_WAIT);
     let mut region = Region::new(&area)?;
     let mut stitcher = Stitcher::new(region.grab()?);
@@ -124,8 +165,9 @@ pub fn run(area: Area, stop: &AtomicBool, mut progress: impl FnMut(Progress)) ->
     if by_hand.is_none() {
         region.move_pointer(area.center());
     }
-    // How far each turn of the wheel asks to go: half the area at first.
-    let mut distance = (area.rect.height / 2).max(1);
+    // How far each turn of the wheel asks to go: half the area at first
+    // (or as chosen).
+    let mut distance = options.first_step(area.rect.height);
     let mut still = 0;
     let end = loop {
         if stop.load(Ordering::Relaxed) {
@@ -156,10 +198,10 @@ pub fn run(area: Area, stop: &AtomicBool, mut progress: impl FnMut(Progress)) ->
             _ => State::Paused,
         };
         progress(Progress {
-            height: stitcher.height().min(MAX_HEIGHT),
+            height: stitcher.height().min(max_height),
             state,
         });
-        if stitcher.height() >= MAX_HEIGHT {
+        if stitcher.height() >= max_height {
             break End::Limit;
         }
         if still >= STILL_STEPS {
@@ -167,7 +209,7 @@ pub fn run(area: Area, stop: &AtomicBool, mut progress: impl FnMut(Progress)) ->
         }
     };
     Ok(Long {
-        image: stitcher.finish(MAX_HEIGHT),
+        image: stitcher.finish(max_height),
         end,
     })
 }
@@ -199,6 +241,24 @@ mod tests {
         assert_eq!(a.center(), [-1620, 300]);
         assert!(a.contains([-1820, 150]));
         assert!(!a.contains([-1420, 300]), "the right edge is outside");
+    }
+
+    #[test]
+    fn steps_and_the_longest_picture_are_kept_sane() {
+        let normal = Options::default();
+        assert_eq!(normal.first_step(300), 150, "half the area, as before");
+        assert_eq!(normal.max_height(), MAX_HEIGHT);
+        let step = |step: f32, height| Options { step, ..normal }.first_step(height);
+        assert_eq!(step(0.25, 300), 75);
+        assert_eq!(step(0.75, 300), 225);
+        assert_eq!(step(5.0, 300), 300, "at most the whole area");
+        assert_eq!(step(0.0, 300), 15, "at least a little");
+        assert_eq!(step(f32::NAN, 300), 150);
+        assert_eq!(step(0.5, 1), 1);
+        let max = |max_height| Options { max_height, ..normal }.max_height();
+        assert_eq!(max(100), 2_000);
+        assert_eq!(max(45_000), 45_000);
+        assert_eq!(max(u32::MAX), 60_000);
     }
 
     #[test]

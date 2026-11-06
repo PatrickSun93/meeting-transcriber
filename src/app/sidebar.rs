@@ -64,11 +64,14 @@ impl App {
             .frame(Frame::new())
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                let key = self.capture.settings.hotkey().label();
+                let key = self.screenshot_key();
+                let goes = if self.capture.settings.into_meeting {
+                    "saved beside the open meeting, linked in its notes"
+                } else {
+                    "saved in the Screenshots folder"
+                };
                 if nav_item(ui, "📷", "Screenshot", false, None)
-                    .on_hover_text(format!(
-                        "Take a screenshot ({key}): saved beside the open meeting, linked in its notes"
-                    ))
+                    .on_hover_text(format!("Take a screenshot{key}: {goes}"))
                     .clicked()
                 {
                     self.start_screenshot(Trigger::Window);

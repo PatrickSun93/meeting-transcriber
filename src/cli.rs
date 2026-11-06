@@ -7,12 +7,18 @@ use std::io::Write as _;
 
 use anyhow::{Context as _, Result, bail};
 
+use crate::capture::annotate::Tool;
+use crate::capture::files::Kind;
+use crate::capture::record::Quality;
+use crate::capture::scrolling::MAX_HEIGHTS;
 use crate::dictation::hotkey::Shortcut;
 use crate::dictation::ollama::json_string;
 use crate::dictation::{self, Claim};
 use crate::models::{self, ModelInfo};
-use crate::platform::{self, KeyEvent};
-use crate::settings::{Settings, settings_path};
+use crate::platform::{self, KeyEvent, Press};
+use crate::settings::{
+    Choice, Clash, DELAYS, DrawStyle, OFF, ScrollStep, Settings, ShotAction, press_setting, settings_path,
+};
 
 /// What `doctor` found: facts in order, and what looks wrong.
 #[derive(Debug, Default)]
@@ -173,61 +179,7 @@ pub fn doctor() -> Report {
     }
 
     // Screenshots.
-    let capture = settings.capture.hotkey();
-    r.fact(
-        "screenshot_hotkey",
-        format!("{} (setting: {})", capture.label(), capture.name()),
-    );
-    if Shortcut::parse(&settings.capture.hotkey).is_none() {
-        r.problems.push(format!(
-            "The screenshot hotkey setting {:?} is not a key or combination; {} is used instead.",
-            settings.capture.hotkey,
-            capture.label()
-        ));
-    }
-    if capture == hotkey {
-        r.problems.push(format!(
-            "The screenshot hotkey and the dictation hotkey are both {}: holding it dictates and takes a \
-             screenshot.",
-            capture.label()
-        ));
-    }
-    r.fact(
-        "screenshots",
-        crate::capture::unsupported().map_or_else(
-            || {
-                settings
-                    .meetings_dir_path()
-                    .join(crate::capture::files::Kind::Screenshot.loose_dir())
-                    .display()
-                    .to_string()
-                    + " (with no meeting open; else beside the meeting)"
-            },
-            str::to_string,
-        ),
-    );
-    let sound = settings.capture.sound();
-    r.fact(
-        "screen_recordings",
-        crate::capture::record::unsupported().map_or_else(
-            || {
-                let heard = match (sound.computer, sound.microphone) {
-                    (true, true) => "with the computer's sound and the microphone",
-                    (true, false) => "with the computer's sound",
-                    (false, true) => "with the microphone",
-                    (false, false) => "without sound",
-                };
-                format!(
-                    "{} (with no meeting open; else beside the meeting), {heard}",
-                    settings
-                        .meetings_dir_path()
-                        .join(crate::capture::files::Kind::Recording.loose_dir())
-                        .display()
-                )
-            },
-            str::to_string,
-        ),
-    );
+    capture_facts(&mut r, &settings, &hotkey);
 
     // Where Whisper runs.
     for (key, value) in crate::gpu::report() {
@@ -245,6 +197,139 @@ pub fn doctor() -> Report {
         r.fact(key, value);
     }
     r
+}
+
+/// The capture hotkeys, where screenshots and screen recordings go and how
+/// they are made, for `doctor`; clashes and unreadable hotkeys are problems.
+fn capture_facts(r: &mut Report, settings: &Settings, dictation_hotkey: &Shortcut) {
+    let c = &settings.capture;
+    for press in Press::ALL {
+        let fact = match press {
+            Press::Screenshot => "screenshot_hotkey",
+            Press::Scroll => "scroll_hotkey",
+            Press::Record => "record_hotkey",
+            Press::Pin => "pin_hotkey",
+        };
+        let key = c.press_hotkey(press);
+        r.fact(
+            fact,
+            key.as_ref().map_or_else(
+                || format!("off (setting {}: {})", press_setting(press), c.press_value(press)),
+                |k| format!("{} (setting {}: {})", k.label(), press_setting(press), k.name()),
+            ),
+        );
+        let label = press.label();
+        if c.press_unreadable(press) {
+            r.problems.push(format!(
+                "The {label} hotkey setting {:?} is not a key or combination (or off); {} is used instead.",
+                c.press_value(press),
+                key.as_ref().map_or_else(|| "off".to_string(), |k| k.label())
+            ));
+        }
+        match (c.clash(press, dictation_hotkey), &key) {
+            (Some(Clash::Dictation), Some(k)) => r.problems.push(format!(
+                "The {label} hotkey and the dictation hotkey are both {}: holding it dictates too.",
+                k.label()
+            )),
+            (Some(Clash::Press(first)), Some(k)) => r.problems.push(format!(
+                "The {label} hotkey is {}, the same as the {} hotkey, which goes first: it does nothing.",
+                k.label(),
+                first.label()
+            )),
+            _ => {}
+        }
+    }
+    let meetings_dir = settings.meetings_dir_path();
+    let goes = if c.into_meeting {
+        "with no meeting open; else beside the meeting"
+    } else {
+        "always; not into meetings"
+    };
+    r.fact(
+        "screenshots",
+        crate::capture::unsupported().map_or_else(
+            || format!("{} ({goes})", c.loose_dir(Kind::Screenshot, &meetings_dir).display()),
+            str::to_string,
+        ),
+    );
+    r.fact("screenshot_action", c.action.id());
+    r.fact(
+        "capture_delay",
+        if c.delay == 0 {
+            "none".to_string()
+        } else {
+            format!("{} seconds", c.delay)
+        },
+    );
+    r.fact(
+        "scrolling",
+        format!(
+            "step {}, at most {} px",
+            c.scroll_step.id(),
+            c.scroll_options().max_height()
+        ),
+    );
+    let sound = c.sound();
+    r.fact(
+        "screen_recordings",
+        crate::capture::record::unsupported().map_or_else(
+            || {
+                let heard = match (sound.computer, sound.microphone) {
+                    (true, true) => "with the computer's sound and the microphone",
+                    (true, false) => "with the computer's sound",
+                    (false, true) => "with the microphone",
+                    (false, false) => "without sound",
+                };
+                let pointer = if c.record_cursor {
+                    "with the pointer"
+                } else {
+                    "without the pointer"
+                };
+                let quality = if cfg!(target_os = "macos") {
+                    "quality chosen by the system".to_string()
+                } else {
+                    format!("quality {}", c.record_quality.id())
+                };
+                format!(
+                    "{} ({goes}), {heard}, {pointer}, {} frames a second, {quality}",
+                    c.loose_dir(Kind::Recording, &meetings_dir).display(),
+                    c.record_fps
+                )
+            },
+            str::to_string,
+        ),
+    );
+}
+
+/// The hotkey settings `pressed` is the keys of, each with what it is.
+pub fn hotkey_settings(settings: &Settings, pressed: &Shortcut) -> Vec<(&'static str, &'static str)> {
+    let mut found = Vec::new();
+    if settings.dictation.hotkey() == *pressed {
+        found.push(("dictation_hotkey", "dictation"));
+    }
+    for press in Press::ALL {
+        if settings.capture.press_hotkey(press).as_ref() == Some(pressed) {
+            found.push((press_setting(press), press.label()));
+        }
+    }
+    found
+}
+
+/// The values a setting may take, when it is one of a few.
+fn choices(key: &str) -> Option<Vec<String>> {
+    fn ids<T: Choice>() -> Vec<String> {
+        T::ALL.iter().map(|c| c.id().to_string()).collect()
+    }
+    let numbers = |list: &[u32]| list.iter().map(u32::to_string).collect();
+    Some(match key {
+        "screenshot_action" => ids::<ShotAction>(),
+        "capture_delay" => numbers(&DELAYS),
+        "draw_tool" => std::iter::once("none".to_string()).chain(ids::<Tool>()).collect(),
+        "scroll_step" => ids::<ScrollStep>(),
+        "record_fps" => numbers(&crate::capture::record::FPS_CHOICES),
+        "record_quality" => ids::<Quality>(),
+        _ => return None,
+    })
 }
 
 /// Every setting as `settings.txt` writes it, in order.
@@ -269,13 +354,42 @@ pub fn set_setting(settings: &Settings, key: &str, value: &str) -> Result<Settin
     if value.contains(['\n', '\r']) {
         bail!("a setting is one line");
     }
-    if (key == "dictation_hotkey" || key == "capture_hotkey") && Shortcut::parse(value).is_none() {
+    let examples = "Examples: right_ctrl, f13, ctrl+shift+vk:68. Run `meeting-transcriber keys` and press the \
+                    keys to see their names.";
+    if key == "dictation_hotkey" && Shortcut::parse(value).is_none() {
+        bail!("{value:?} is not a key or combination. {examples}");
+    }
+    let press = Press::ALL.into_iter().any(|p| press_setting(p) == key);
+    if press && !value.trim().eq_ignore_ascii_case(OFF) && Shortcut::parse(value).is_none() {
+        bail!("{value:?} is not a key or combination, nor off. {examples}");
+    }
+    if let Some(choices) = choices(key)
+        && !choices.iter().any(|c| c == value.trim())
+    {
         bail!(
-            "{value:?} is not a key or combination. Examples: right_ctrl, f13, ctrl+shift+vk:68. \
-             Run `meeting-transcriber keys` and press the keys to see their names."
+            "{value:?} is not a value for {key}; it is one of: {}",
+            choices.join(", ")
+        );
+    }
+    if key == "scroll_max_height"
+        && value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .is_none_or(|n| !MAX_HEIGHTS.contains(&n))
+    {
+        bail!(
+            "{value:?} is not a value for {key}: a number of pixels from {} to {}",
+            MAX_HEIGHTS.start(),
+            MAX_HEIGHTS.end()
         );
     }
     let changed = Settings::parse(&format!("{}\n{key}={value}\n", settings.to_text()));
+    if key == "draw_style" {
+        // Tools left out go back to their default; the rest is checked here.
+        DrawStyle::check(value).map_err(|why| anyhow::anyhow!("{why}"))?;
+        return Ok(changed);
+    }
     let now = settings_entries(&changed)
         .into_iter()
         .find(|(k, _)| k == key)
@@ -339,7 +453,6 @@ pub fn run_settings(args: &[String], json: bool) -> Result<()> {
 pub fn run_keys(once: bool, save: bool, json: bool) -> Result<()> {
     let mut settings = Settings::load();
     let hotkey = settings.dictation.hotkey();
-    let screenshot = settings.capture.hotkey();
     let (tx, rx) = crossbeam_channel::unbounded();
     let watch = platform::watch_hotkey(hotkey.clone(), move |event| {
         let _ = tx.send(event);
@@ -368,20 +481,26 @@ pub fn run_keys(once: bool, save: bool, json: bool) -> Result<()> {
             _ => continue,
         };
         let is_hotkey = pressed == hotkey;
-        let is_screenshot = pressed == screenshot;
+        let found = hotkey_settings(&settings, &pressed);
+        let is_screenshot = found.iter().any(|(key, _)| *key == press_setting(Press::Screenshot));
         if json {
+            let keys: Vec<String> = found.iter().map(|(key, _)| json_string(key)).collect();
             println!(
-                "{{\"label\":{},\"name\":{},\"is_hotkey\":{is_hotkey},\"is_screenshot_hotkey\":{is_screenshot}}}",
+                "{{\"label\":{},\"name\":{},\"is_hotkey\":{is_hotkey},\"is_screenshot_hotkey\":{is_screenshot},\
+                 \"settings\":[{}]}}",
                 json_string(&pressed.label()),
-                json_string(&pressed.name())
+                json_string(&pressed.name()),
+                keys.join(",")
             );
         } else {
-            let mark = if is_hotkey {
-                "   <- the dictation hotkey"
-            } else if is_screenshot {
-                "   <- the screenshot hotkey"
+            let marks: Vec<String> = found
+                .iter()
+                .map(|(key, what)| format!("the {what} hotkey ({key})"))
+                .collect();
+            let mark = if marks.is_empty() {
+                String::new()
             } else {
-                ""
+                format!("   <- {}", marks.join(", "))
             };
             println!("{}   (setting: {}){mark}", pressed.label(), pressed.name());
         }
@@ -472,11 +591,119 @@ mod tests {
         let shot = set_setting(&s, "capture_hotkey", "super+shift+vk:20").unwrap();
         assert_eq!(shot.capture.hotkey, "super+shift+vk:20");
         assert!(set_setting(&s, "capture_hotkey", "ctrl+shift").is_err());
+        // The dictation hotkey can't be off; the capture hotkeys can.
+        assert!(set_setting(&s, "dictation_hotkey", "off").is_err());
+        for key in ["capture_hotkey", "scroll_hotkey", "record_hotkey", "pin_hotkey"] {
+            let off = set_setting(&s, key, "off").unwrap();
+            assert_eq!(
+                off.capture.press_hotkey(Press::ALL[0]).is_none(),
+                key == "capture_hotkey"
+            );
+            let on = set_setting(&s, key, "ctrl+alt+vk:83").unwrap();
+            assert!(settings_entries(&on).contains(&(key.to_string(), "ctrl+alt+vk:83".to_string())));
+            assert!(set_setting(&s, key, "nonsense").is_err(), "{key}");
+        }
         assert!(set_setting(&s, "no_such_setting", "1").is_err());
         assert!(set_setting(&s, "dictation_min_seconds", "abc").is_err());
         assert!(set_setting(&s, "language", "a\nb").is_err());
         let lang = set_setting(&s, "language", "zh").unwrap();
         assert_eq!(lang.language, "zh");
+    }
+
+    #[test]
+    fn capture_settings_are_checked_when_set() {
+        let s = Settings::default();
+        let ok = |key: &str, value: &str| set_setting(&s, key, value).unwrap_or_else(|e| panic!("{key}={value}: {e}"));
+        let bad = |key: &str, value: &str| assert!(set_setting(&s, key, value).is_err(), "{key}={value}");
+        assert_eq!(ok("screenshot_action", "pin").capture.action, ShotAction::Pin);
+        assert_eq!(ok("screenshot_action", "copy").capture.action, ShotAction::Copy);
+        bad("screenshot_action", "print");
+        assert_eq!(ok("capture_delay", "5").capture.delay, 5);
+        bad("capture_delay", "4");
+        bad("capture_delay", "-1");
+        assert_eq!(ok("draw_tool", "mosaic").capture.draw_tool, Some(Tool::Mosaic));
+        assert_eq!(ok("draw_tool", "none").capture.draw_tool, None);
+        bad("draw_tool", "crayon");
+        assert_eq!(ok("scroll_step", "large").capture.scroll_step, ScrollStep::Large);
+        bad("scroll_step", "huge");
+        assert_eq!(ok("scroll_max_height", "45000").capture.scroll_max_height, 45_000);
+        bad("scroll_max_height", "100");
+        bad("scroll_max_height", "999999");
+        bad("scroll_max_height", "tall");
+        assert_eq!(ok("record_fps", "60").capture.record_fps, 60);
+        bad("record_fps", "24");
+        assert_eq!(ok("record_quality", "high").capture.record_quality, Quality::High);
+        bad("record_quality", "ultra");
+        assert!(!ok("record_cursor", "false").capture.record_cursor);
+        bad("record_cursor", "no");
+        assert!(!ok("capture_into_meeting", "false").capture.into_meeting);
+        bad("capture_into_meeting", "maybe");
+        assert_eq!(ok("screenshots_dir", "~/Shots").capture.screenshots_dir, "~/Shots");
+        assert_eq!(
+            ok("recordings_dir", "/Volumes/X/Videos").capture.recordings_dir,
+            "/Volumes/X/Videos"
+        );
+        let style = ok("draw_style", "pen:blue:large").capture.draw_style;
+        assert_eq!(style.get(Tool::Pen).color, 3);
+        assert_eq!(style.get(Tool::Arrow), crate::settings::ToolStyle::default());
+        bad("draw_style", "pen:purple:large");
+        bad("draw_style", "pen");
+    }
+
+    #[test]
+    fn a_combination_is_told_which_hotkey_settings_it_is() {
+        let mut s = Settings::default();
+        let shot = crate::capture::default_hotkey();
+        assert_eq!(hotkey_settings(&s, &shot), [("capture_hotkey", "screenshot")]);
+        assert_eq!(
+            hotkey_settings(&s, &s.dictation.hotkey()),
+            [("dictation_hotkey", "dictation")]
+        );
+        s.capture.pin_hotkey = shot.name();
+        s.capture.record_hotkey = "f13".into();
+        assert_eq!(
+            hotkey_settings(&s, &shot),
+            [("capture_hotkey", "screenshot"), ("pin_hotkey", "pin")]
+        );
+        assert_eq!(
+            hotkey_settings(&s, &Shortcut::parse("f13").unwrap()),
+            [("record_hotkey", "screen recording")]
+        );
+        assert!(hotkey_settings(&s, &Shortcut::parse("f19").unwrap()).is_empty());
+        // Off is no keys at all.
+        s.capture.hotkey = OFF.into();
+        assert_eq!(hotkey_settings(&s, &shot), [("pin_hotkey", "pin")]);
+    }
+
+    #[test]
+    fn doctor_flags_capture_hotkey_clashes() {
+        let mut s = Settings::default();
+        s.capture.pin_hotkey = s.capture.hotkey.clone();
+        s.capture.scroll_hotkey = "nonsense".into();
+        s.capture.record_hotkey = s.dictation.hotkey().name();
+        let mut r = Report::default();
+        capture_facts(&mut r, &s, &s.dictation.hotkey());
+        let fact = |key: &str| r.facts.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()).unwrap();
+        assert!(fact("scroll_hotkey").starts_with("off"), "{}", fact("scroll_hotkey"));
+        assert!(fact("pin_hotkey").contains("pin_hotkey"));
+        assert_eq!(fact("screenshot_action"), "copy_and_save");
+        assert_eq!(fact("capture_delay"), "none");
+        let problems = r.problems.join("\n");
+        assert!(problems.contains("The pin hotkey is"), "{problems}");
+        assert!(
+            problems.contains("The scrolling screenshot hotkey setting \"nonsense\""),
+            "{problems}"
+        );
+        assert!(
+            problems.contains("The screen recording hotkey and the dictation hotkey"),
+            "{problems}"
+        );
+        assert_eq!(r.problems.len(), 3, "{problems}");
+        // The defaults are fine.
+        let mut r = Report::default();
+        let d = Settings::default();
+        capture_facts(&mut r, &d, &d.dictation.hotkey());
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
     }
 
     #[test]

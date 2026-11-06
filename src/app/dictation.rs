@@ -1,5 +1,5 @@
 //! Dictation in the window: starting the hotkey watcher (which also
-//! watches the screenshot hotkey), handing the dictation threads the shared
+//! watches the capture hotkeys), handing the dictation threads the shared
 //! engine and the settings, the menu bar (or tray) item, closing to it, and
 //! the recordings list for the sidebar.
 
@@ -29,7 +29,8 @@ const VOICE2CURSOR_EVERY: Duration = Duration::from_secs(3);
 pub(super) enum KeysFor {
     #[default]
     Dictation,
-    Screenshot,
+    /// A capture hotkey: the screenshot's, the scrolling screenshot's, …
+    Capture(Press),
 }
 
 /// The recordings folder, listed in the background.
@@ -210,7 +211,9 @@ impl App {
         });
         match result {
             Ok(watch) => {
-                watch.set_press(Press::Screenshot, self.capture.settings.hotkey());
+                for (press, key) in self.capture.settings.presses() {
+                    watch.set_press(press, Some(key));
+                }
                 let probe = watch.clone();
                 self.dict
                     .dictation
@@ -242,7 +245,7 @@ impl App {
 
     /// Whether this copy of the app holds dictation's lock, looking again
     /// while another holds it (it may have quit since). Only that copy
-    /// dictates and answers the screenshot hotkey, so two copies never
+    /// dictates and answers the capture hotkeys, so two copies never
     /// both do.
     fn holds_claim(&mut self) -> bool {
         if matches!(self.dict.claim, Claim::Taken) {
@@ -323,11 +326,11 @@ impl App {
             match event {
                 KeyEvent::Captured(key) => match self.dict.keys_for {
                     KeysFor::Dictation => self.dict.settings.hotkey = key.name(),
-                    KeysFor::Screenshot => self.capture.settings.hotkey = key.name(),
+                    KeysFor::Capture(press) => *self.capture.settings.press_value_mut(press) = key.name(),
                 },
-                KeyEvent::Pressed(Press::Screenshot) => {
+                KeyEvent::Pressed(press) => {
                     if self.holds_claim() {
-                        self.start_screenshot(Trigger::Hotkey);
+                        self.start_screenshot(Trigger::Hotkey(press));
                     }
                 }
                 KeyEvent::Stopped => {
@@ -452,9 +455,14 @@ impl App {
             if watch.key() != key {
                 watch.set_key(key);
             }
-            let screenshot = self.capture.settings.hotkey();
-            if !watch.presses().contains(&(Press::Screenshot, screenshot.clone())) {
-                watch.set_press(Press::Screenshot, screenshot);
+            // Hotkeys switched off (or the same as an earlier one) are
+            // not watched.
+            let wanted = self.capture.settings.presses();
+            for press in Press::ALL {
+                let key = wanted.iter().find(|(p, _)| *p == press).map(|(_, key)| key.clone());
+                if watch.press(press) != key {
+                    watch.set_press(press, key);
+                }
             }
         }
     }
@@ -488,8 +496,11 @@ impl App {
         let status = self.dict.status();
         let (mut phase, mut text) = self.dictation_state(&status);
         let recording_screen = self.recording_screen();
+        let countdown = self.countdown_left();
         if recording_screen {
             (phase, text) = (Phase::Recording, "Recording the screen".into());
+        } else if let Some(left) = countdown {
+            text = format!("Screenshot in {left}…");
         }
         let menu = TrayMenu {
             status: text.clone(),
@@ -500,6 +511,7 @@ impl App {
                 .collect(),
             paused: self.dict.paused,
             recording_screen,
+            counting_down: countdown.is_some(),
         };
         tray.set(tray_icon(phase), &format!("Meeting Transcriber · {text}"), menu);
     }

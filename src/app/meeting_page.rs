@@ -272,10 +272,10 @@ impl App {
         ui.horizontal(|ui| {
             theme::card_title(ui, "Notes");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let key = self.capture.settings.hotkey().label();
+                let key = self.screenshot_key();
                 if ui
                     .small_button("📷")
-                    .on_hover_text(format!("Take a screenshot into the notes ({key})"))
+                    .on_hover_text(format!("Take a screenshot into the notes{key}"))
                     .clicked()
                 {
                     self.start_screenshot(Trigger::Notes);

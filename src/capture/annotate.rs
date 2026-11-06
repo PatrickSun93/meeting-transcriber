@@ -12,6 +12,34 @@ use super::select::PxRect;
 /// A colour: red, green, blue, alpha.
 pub type Rgba = [u8; 4];
 
+/// A drawing tool on the overlay's toolbar, making one kind of mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tool {
+    Rectangle,
+    Ellipse,
+    Arrow,
+    Pen,
+    Text,
+    Mosaic,
+}
+
+impl Tool {
+    /// Left to right on the toolbar.
+    pub const ALL: [Tool; 6] = [
+        Tool::Rectangle,
+        Tool::Ellipse,
+        Tool::Arrow,
+        Tool::Pen,
+        Tool::Text,
+        Tool::Mosaic,
+    ];
+
+    /// Its place in `ALL`.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 /// What a mark is, and where.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Shape {

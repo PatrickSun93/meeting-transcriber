@@ -1,6 +1,6 @@
 //! Screen recording: an area of a display recorded into an MP4 file
-//! (H.264, at about 30 frames a second, with the pointer), with the
-//! computer's sound and the microphone, until it is stopped. Each system
+//! (H.264, at 15, 30 or 60 frames a second, with the pointer or without),
+//! with the computer's sound and the microphone, until it is stopped. Each system
 //! records in its own way: the Mac's ScreenCaptureKit writes the file
 //! itself (`macos.rs`); on Windows the area is copied with GDI and Media
 //! Foundation encodes it (`windows.rs`), its sound mixed here first
@@ -35,8 +35,10 @@ use anyhow::{Result, bail};
 
 use super::scrolling::Area;
 
-/// Frames a second.
-pub const FPS: u32 = 30;
+/// Frames a second, as Settings offers them.
+pub const FPS_CHOICES: [u32; 3] = [15, 30, 60];
+/// Frames a second until another is chosen.
+pub const DEFAULT_FPS: u32 = 30;
 /// The smallest area that can be recorded, in pixels each way.
 pub const MIN_SIDE: u32 = 32;
 /// The largest video, long side and short side: 4K, which every H.264
@@ -54,6 +56,62 @@ pub struct Sound {
 impl Sound {
     pub fn any(self) -> bool {
         self.computer || self.microphone
+    }
+}
+
+/// How much the video is squeezed: its bitrate. Only Windows sets one;
+/// on the Mac, ScreenCaptureKit's recording output picks its own and
+/// offers no setting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    Low,
+    #[default]
+    Normal,
+    High,
+}
+
+impl Quality {
+    pub const ALL: [Quality; 3] = [Quality::Low, Quality::Normal, Quality::High];
+
+    /// The bitrate, against Normal's.
+    pub fn factor(self) -> f64 {
+        match self {
+            Quality::Low => 0.5,
+            Quality::Normal => 1.0,
+            Quality::High => 2.0,
+        }
+    }
+}
+
+/// How a recording is made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    pub sound: Sound,
+    /// Frames a second (one of `FPS_CHOICES`).
+    pub fps: u32,
+    /// With the pointer in the video.
+    pub cursor: bool,
+    pub quality: Quality,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            sound: Sound {
+                computer: true,
+                microphone: true,
+            },
+            fps: DEFAULT_FPS,
+            cursor: true,
+            quality: Quality::Normal,
+        }
+    }
+}
+
+impl Options {
+    /// Frames a second, at least 1 and at most 60.
+    pub fn fps(self) -> u32 {
+        self.fps.clamp(1, 60)
     }
 }
 
@@ -86,10 +144,10 @@ pub fn unsupported() -> Option<&'static str> {
     imp::unsupported()
 }
 
-/// Starts recording `area` into the MP4 file `path`, hearing `sound`.
-/// Blocking (up to a few seconds): called on a thread of its own. Fails
-/// without permission, or where recording is not supported, saying so.
-pub fn start(area: &Area, path: &Path, sound: Sound) -> Result<Recorder> {
+/// Starts recording `area` into the MP4 file `path`, made as `options`
+/// say. Blocking (up to a few seconds): called on a thread of its own.
+/// Fails without permission, or where recording is not supported, saying so.
+pub fn start(area: &Area, path: &Path, options: Options) -> Result<Recorder> {
     if let Some(why) = unsupported() {
         bail!("{why}");
     }
@@ -99,7 +157,7 @@ pub fn start(area: &Area, path: &Path, sound: Sound) -> Result<Recorder> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("could not create {}: {e}", dir.display()))?;
     }
-    imp::Recorder::start(area, path, sound).map(Recorder)
+    imp::Recorder::start(area, path, options).map(Recorder)
 }
 
 /// The video's size for an area of `width` × `height` pixels: the same,
@@ -122,12 +180,13 @@ pub fn scaled_down(source: [u32; 2], size: [u32; 2]) -> bool {
     source[0] > size[0] + 1 || source[1] > size[1] + 1
 }
 
-/// How many bits a second the video is encoded at: enough for sharp text
-/// on a screen, about 5 Mbit/s at 1080p.
+/// How many bits a second the video is encoded at, at `fps` frames a
+/// second: at Normal quality enough for sharp text on a screen, about
+/// 5 Mbit/s at 1080p and 30 frames; half that at Low, twice at High.
 #[cfg(any(windows, test))]
-pub fn bitrate([width, height]: [u32; 2]) -> u32 {
-    let bits = f64::from(width) * f64::from(height) * f64::from(FPS) * 0.08;
-    bits.clamp(1_000_000.0, 24_000_000.0) as u32
+pub fn bitrate([width, height]: [u32; 2], fps: u32, quality: Quality) -> u32 {
+    let bits = f64::from(width) * f64::from(height) * f64::from(fps) * 0.08 * quality.factor();
+    bits.clamp(1_000_000.0, 48_000_000.0) as u32
 }
 
 /// When a recording's frames are taken: `fps` a second by
@@ -208,16 +267,37 @@ mod tests {
     }
 
     #[test]
-    fn the_bitrate_follows_the_size() {
-        assert_eq!(bitrate([1920, 1080]), 4_976_640);
-        assert_eq!(bitrate([64, 64]), 1_000_000);
-        assert_eq!(bitrate([3840, 2160]), 19_906_560);
+    fn the_bitrate_follows_the_size_the_frames_and_the_quality() {
+        let normal = |size| bitrate(size, DEFAULT_FPS, Quality::Normal);
+        assert_eq!(normal([1920, 1080]), 4_976_640);
+        assert_eq!(normal([64, 64]), 1_000_000);
+        assert_eq!(normal([3840, 2160]), 19_906_560);
+        // Twice the frames, twice the bits; half at 15.
+        assert_eq!(bitrate([1920, 1080], 60, Quality::Normal), 9_953_280);
+        assert_eq!(bitrate([1920, 1080], 15, Quality::Normal), 2_488_320);
+        assert_eq!(bitrate([1920, 1080], 30, Quality::Low), 2_488_320);
+        assert_eq!(bitrate([1920, 1080], 30, Quality::High), 9_953_280);
+        // Never below 1 Mbit/s nor above 48.
+        assert_eq!(bitrate([64, 64], 15, Quality::Low), 1_000_000);
+        assert_eq!(bitrate([3840, 2160], 60, Quality::High), 48_000_000);
+        assert!(Quality::ALL.windows(2).all(|q| q[0].factor() < q[1].factor()));
+        assert_eq!(Quality::default(), Quality::Normal);
+    }
+
+    #[test]
+    fn options_keep_the_frame_rate_sane() {
+        let options = Options::default();
+        assert_eq!((options.fps(), options.cursor), (DEFAULT_FPS, true));
+        assert!(options.sound.any());
+        assert_eq!(Options { fps: 0, ..options }.fps(), 1);
+        assert_eq!(Options { fps: 240, ..options }.fps(), 60);
+        assert!(FPS_CHOICES.contains(&DEFAULT_FPS));
     }
 
     #[test]
     fn frames_keep_to_the_clock_and_late_ones_skip() {
         let ms = Duration::from_millis;
-        let mut clock = FrameClock::new(FPS);
+        let mut clock = FrameClock::new(DEFAULT_FPS);
         let frame = clock.interval();
         assert_eq!(frame, Duration::from_nanos(33_333_333));
         // On time: the next frame is due one interval after the start.
@@ -231,7 +311,7 @@ mod tests {
         assert!(wait > Duration::ZERO && wait <= frame, "{wait:?}");
         assert_eq!((now + wait).as_nanos() % frame.as_nanos(), 0, "on the grid");
         // Exactly on a due time: that one is missed too, the next is a whole frame away.
-        let mut clock = FrameClock::new(FPS);
+        let mut clock = FrameClock::new(DEFAULT_FPS);
         assert_eq!(clock.wait_after(frame), frame);
     }
 

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::{Recorded, Sound};
+use super::{Options, Recorded};
 use crate::capture::scrolling::Area;
 
 const UNSUPPORTED: &str = "Screen recording is not supported on Linux yet.";
@@ -17,7 +17,7 @@ pub fn unsupported() -> Option<&'static str> {
 pub enum Recorder {}
 
 impl Recorder {
-    pub fn start(_area: &Area, _path: &Path, _sound: Sound) -> Result<Recorder> {
+    pub fn start(_area: &Area, _path: &Path, _options: Options) -> Result<Recorder> {
         bail!("{UNSUPPORTED}")
     }
 

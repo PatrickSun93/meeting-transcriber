@@ -414,6 +414,7 @@ mod tests {
             recent: (0..recent).map(|i| (format!("09:0{i}"), format!("text {i}"))).collect(),
             paused,
             recording_screen: false,
+            counting_down: false,
         }
     }
 
@@ -462,6 +463,13 @@ mod tests {
         };
         assert_eq!(menu_items(&recording)[4].label, "Stop screen recording");
         assert_eq!(menu_action(ID_SCREENSHOT, &recording), Some(TrayAction::Screenshot));
+        // During a countdown, it cancels the screenshot.
+        let counting = TrayMenu {
+            counting_down: true,
+            ..menu(0, false)
+        };
+        assert_eq!(menu_items(&counting)[4].label, "Cancel the screenshot");
+        assert_eq!(menu_action(ID_SCREENSHOT, &counting), Some(TrayAction::Screenshot));
     }
 
     #[test]

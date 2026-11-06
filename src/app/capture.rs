@@ -1,20 +1,20 @@
-//! Screenshots in the window: taking one (the hotkey, the Screenshot
-//! buttons, the menu bar or tray item), the overlay while choosing what to
-//! keep and drawing on it (`overlay.rs`, `drawing.rs`), a scrolling
-//! screenshot of it (`scrolling.rs`) or a screen recording
-//! (`recording.rs`), then saving it: beside the open meeting with a line
-//! in its notes, or in the Screenshots folder; or pinning it to the screen
-//! (`pins.rs`); and the Screenshots card in Settings.
+//! Screenshots in the window: taking one (the capture hotkeys, the
+//! Screenshot buttons, the menu bar or tray item), after a countdown if one
+//! is chosen, the overlay while choosing what to keep and drawing on it
+//! (`overlay.rs`, `drawing.rs`), a scrolling screenshot of it
+//! (`scrolling.rs`) or a screen recording (`recording.rs`), then copying or
+//! saving it: beside the open meeting with a line in its notes, or in the
+//! Screenshots folder; or pinning it to the screen (`pins.rs`). The
+//! Screenshots card in Settings is `capture_settings.rs`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, RichText, Ui};
+use eframe::egui::{self, RichText, ViewportBuilder, ViewportId, pos2, vec2};
 
-use super::dictation::KeysFor;
-use super::overlay::{Finish, Overlay, Picture};
+use super::overlay::{Finish, Main, Overlay, Picture, Setup};
 use super::pins::Pins;
 use super::recording::{Finished, Recording};
 use super::scrolling::Scrolling;
@@ -24,13 +24,15 @@ use crate::capture::annotate::Shape;
 use crate::capture::files::{self, Kind, Moment};
 use crate::capture::image::Image;
 use crate::capture::raster::{self, Fonts};
-use crate::capture::{self, Shot};
-use crate::settings::CaptureSettings;
+use crate::capture::{self, Shot, hide_from_captures, raise_overlay};
+use crate::platform::Press;
+use crate::settings::{CaptureSettings, ShotAction};
 
 /// What asked for a screenshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Trigger {
-    Hotkey,
+    /// A capture hotkey: which one.
+    Hotkey(Press),
     /// A button in the window, which is in the way.
     Window,
     /// The 📷 above the notes: into this meeting, even a new, empty one.
@@ -41,6 +43,52 @@ pub(super) enum Trigger {
 
 /// How long quitting the app waits for screenshots still being written.
 const SAVE_WAIT: Duration = Duration::from_secs(5);
+/// The countdown's window, by whose title the system's window is found.
+const COUNTDOWN_TITLE: &str = "Meeting Transcriber countdown";
+/// Its size, in points.
+const COUNTDOWN_SIZE: egui::Vec2 = vec2(190.0, 64.0);
+/// For the countdown's window to leave the screen before the picture.
+const COUNTDOWN_GONE: Duration = Duration::from_millis(200);
+
+/// The overlay's main action (what Enter and a double-click do) for a
+/// screenshot asked for by `trigger`: a capture hotkey's own, else as the
+/// Settings say for a plain screenshot.
+pub(super) fn main_action(trigger: Trigger, action: ShotAction) -> Main {
+    match trigger {
+        Trigger::Hotkey(Press::Scroll) => Main::Scroll,
+        Trigger::Hotkey(Press::Record) => Main::Record,
+        Trigger::Hotkey(Press::Pin) => Main::Pin,
+        Trigger::Hotkey(Press::Screenshot) | Trigger::Window | Trigger::Notes | Trigger::Menu => match action {
+            ShotAction::CopyAndSave | ShotAction::Copy => Main::Copy,
+            ShotAction::Save => Main::Save,
+            ShotAction::Pin => Main::Pin,
+        },
+    }
+}
+
+/// The meeting in the window, as far as where captures go is concerned.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OpenMeetingState {
+    /// An old `.txt` transcript, which takes no notes.
+    pub read_only: bool,
+    pub has_file: bool,
+    /// Worth a file of its own once something is added to it.
+    pub worth_a_file: bool,
+}
+
+/// Whether a capture goes into the meeting in the window (beside its file,
+/// with a line in its notes) rather than into its folder: asked for from
+/// the notes, or with `into_meeting` set and a meeting there to go into.
+pub(super) fn goes_into_meeting(open: OpenMeetingState, into_notes: bool, into_meeting: bool) -> bool {
+    !open.read_only && (into_notes || (into_meeting && (open.has_file || open.worth_a_file)))
+}
+
+/// The countdown before a screenshot is taken, when one is chosen.
+struct Countdown {
+    until: Instant,
+    /// Its window is raised and out of screen captures.
+    ready: bool,
+}
 
 /// A picture being written, on its thread.
 struct Saved {
@@ -78,11 +126,14 @@ struct Taking {
     show_window_after: bool,
     /// Asked for from the notes, so it goes into them.
     into_notes: bool,
+    /// What Enter does on the overlay.
+    main: Main,
 }
 
 pub(super) struct CaptureState {
     pub settings: CaptureSettings,
     taking: Option<Taking>,
+    countdown: Option<Countdown>,
     grabbing: Option<Receiver<Result<Shot>>>,
     overlay: Option<Overlay>,
     pub scrolling: Option<Scrolling>,
@@ -108,6 +159,7 @@ impl CaptureState {
         Self {
             settings,
             taking: None,
+            countdown: None,
             grabbing: None,
             overlay: None,
             scrolling: None,
@@ -136,15 +188,20 @@ impl CaptureState {
 
 impl App {
     /// Takes a screenshot of the display under the mouse and shows the
-    /// overlay to choose what to keep. One at a time: asked for during a
-    /// scrolling screenshot or a screen recording, it stops that one.
+    /// overlay to choose what to keep, after the countdown when one is
+    /// chosen. One at a time: asked for during a countdown, a scrolling
+    /// screenshot or a screen recording, it stops that one.
     pub(super) fn start_screenshot(&mut self, trigger: Trigger) {
         if self.recording_screen() {
             self.stop_recording();
             return;
         }
         if self.capture.taking.is_some() {
-            self.stop_scrolling();
+            if self.capture.countdown.take().is_some() {
+                self.end_screenshot(&self.ctx.clone());
+            } else {
+                self.stop_scrolling();
+            }
             return;
         }
         if let Some(why) = capture::unsupported() {
@@ -161,11 +218,31 @@ impl App {
         }
         // Long enough for the window or the menu to fade out.
         let wait = match trigger {
-            Trigger::Hotkey => Duration::ZERO,
+            Trigger::Hotkey(_) => Duration::ZERO,
             Trigger::Window | Trigger::Notes if hide => Duration::from_millis(300),
             Trigger::Window | Trigger::Notes => Duration::ZERO,
             Trigger::Menu => Duration::from_millis(250),
         };
+        self.capture.taking = Some(Taking {
+            clock: self.recording().then(|| self.recorded_seconds()),
+            show_window_after: hide,
+            into_notes: trigger == Trigger::Notes,
+            main: main_action(trigger, self.capture.settings.action),
+        });
+        let delay = Duration::from_secs(self.capture.settings.delay.into());
+        if delay.is_zero() {
+            self.grab_screen(wait);
+        } else {
+            self.capture.countdown = Some(Countdown {
+                until: Instant::now() + delay.max(wait),
+                ready: false,
+            });
+        }
+    }
+
+    /// Grabs the display under the mouse on a thread, after `wait`.
+    fn grab_screen(&mut self, wait: Duration) {
+        // The app in front now gets the focus back afterwards.
         capture::remember_front_app();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let ctx = self.ctx.clone();
@@ -174,30 +251,65 @@ impl App {
             let _ = tx.send(capture::grab());
             ctx.request_repaint();
         });
-        if let Err(e) = spawned {
-            self.report(format!("Could not take a screenshot: {e}"));
-            if hide {
-                self.show_window(&self.ctx.clone());
+        match spawned {
+            Ok(_) => self.capture.grabbing = Some(rx),
+            Err(e) => {
+                self.report(format!("Could not take a screenshot: {e}"));
+                self.end_screenshot(&self.ctx.clone());
             }
-            return;
         }
-        self.capture.taking = Some(Taking {
-            clock: self.recording().then(|| self.recorded_seconds()),
-            show_window_after: hide,
-            into_notes: trigger == Trigger::Notes,
-        });
-        self.capture.grabbing = Some(rx);
+    }
+
+    /// The screenshot hotkey, for a button's hover text: " (⌘⇧2)", or
+    /// nothing when it is off.
+    pub(super) fn screenshot_key(&self) -> String {
+        self.capture
+            .settings
+            .press_hotkey(Press::Screenshot)
+            .map(|key| format!(" ({})", key.label()))
+            .unwrap_or_default()
+    }
+
+    /// The seconds left of the countdown, while there is one.
+    pub(super) fn countdown_left(&self) -> Option<u64> {
+        let left = self
+            .capture
+            .countdown
+            .as_ref()?
+            .until
+            .saturating_duration_since(Instant::now());
+        Some(left.as_secs_f32().ceil() as u64)
+    }
+
+    /// The overlay's choices for a screenshot whose overlay shows now.
+    fn overlay_setup(&self) -> Setup {
+        let settings = &self.capture.settings;
+        Setup {
+            main: self.capture.taking.as_ref().map_or(Main::Copy, |t| t.main),
+            copy_saves: settings.action.copy_saves(),
+            tool: settings.draw_tool,
+            style: settings.draw_style,
+        }
     }
 
     /// Runs every frame, also while the window is hidden: takes in the
     /// screenshot and finished saves, and keeps the overlay drawn.
     pub(super) fn capture_logic(&mut self, ctx: &egui::Context) {
+        if self
+            .capture
+            .countdown
+            .as_ref()
+            .is_some_and(|c| Instant::now() >= c.until)
+        {
+            self.capture.countdown = None;
+            self.grab_screen(COUNTDOWN_GONE);
+        }
         if let Some(rx) = &self.capture.grabbing
             && let Ok(result) = rx.try_recv()
         {
             self.capture.grabbing = None;
             match result {
-                Ok(shot) => self.capture.overlay = Some(Overlay::new(ctx, shot)),
+                Ok(shot) => self.capture.overlay = Some(Overlay::new(ctx, shot, self.overlay_setup())),
                 Err(e) => {
                     self.end_screenshot(ctx);
                     self.report(format!("Could not take a screenshot: {e:#}"));
@@ -208,13 +320,19 @@ impl App {
         self.scrolling_logic(ctx);
         self.recording_logic(ctx);
         self.pins_logic(ctx);
-        if self.capture.overlay.is_some() || self.capture.scrolling.is_some() || self.capture.recording.is_some() {
-            // The overlay, and the scrolling and recording windows, are
-            // drawn by the window's frame, which a hidden window would skip.
+        let capture = &self.capture;
+        if capture.overlay.is_some()
+            || capture.countdown.is_some()
+            || capture.scrolling.is_some()
+            || capture.recording.is_some()
+        {
+            // The overlay, the countdown, and the scrolling and recording
+            // windows, are drawn by the window's frame, which a hidden
+            // window would skip.
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
-            if self.capture.overlay.is_some() {
+            if capture.overlay.is_some() {
                 ctx.request_repaint();
-            } else if self.capture.scrolling.is_some() {
+            } else if capture.scrolling.is_some() || capture.countdown.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(50));
             } else {
                 // The recording's timer.
@@ -256,10 +374,12 @@ impl App {
         }
     }
 
-    /// The overlay's window while it is up, the scrolling screenshot's,
-    /// the screen recording's, and the pins'. Called from the window's frame.
+    /// The overlay's window while it is up, the countdown's, the scrolling
+    /// screenshot's, the screen recording's, and the pins'. Called from the
+    /// window's frame.
     pub(super) fn capture_overlay(&mut self, ctx: &egui::Context) {
         self.pin_windows(ctx);
+        self.countdown_window(ctx);
         self.scrolling_windows(ctx);
         self.recording_windows(ctx);
         let Some(overlay) = self.capture.overlay.as_mut() else {
@@ -269,6 +389,8 @@ impl App {
         let Some(finish) = overlay.show(ctx) else {
             return;
         };
+        // The colours and sizes last used, for next time.
+        self.capture.settings.draw_style = overlay.draw_style();
         self.capture.overlay = None;
         let (clock, into_notes) = self
             .capture
@@ -311,7 +433,59 @@ impl App {
         };
         self.end_screenshot(ctx);
         let image = self.flatten(picture);
+        if copy && !self.capture.settings.action.copy_saves() {
+            return self.copy_screenshot(&image);
+        }
         self.keep_screenshot(image, when, copy, None);
+    }
+
+    /// Puts the picture on the clipboard only: no file, no line in the notes.
+    fn copy_screenshot(&mut self, image: &Image) {
+        match platform::copy_image(image.width, image.height, &image.rgba) {
+            Ok(()) => self.notify("Copied to the clipboard".into(), None),
+            Err(e) => {
+                self.report(format!("Could not copy the screenshot: {e:#}"));
+                self.show_window(&self.ctx.clone());
+            }
+        }
+    }
+
+    /// The countdown's small window at the top of the screen while it
+    /// counts. Called from the window's frame.
+    fn countdown_window(&mut self, ctx: &egui::Context) {
+        let Some(left) = self.countdown_left() else {
+            return;
+        };
+        let Some(countdown) = &mut self.capture.countdown else {
+            return;
+        };
+        // At the top of the window's display, in the middle.
+        let monitor = ctx.input(|i| i.viewport().monitor_size).unwrap_or(vec2(1280.0, 800.0));
+        let builder = ViewportBuilder::default()
+            .with_title(COUNTDOWN_TITLE)
+            .with_position(pos2(((monitor.x - COUNTDOWN_SIZE.x) / 2.0).max(0.0), 48.0))
+            .with_inner_size(COUNTDOWN_SIZE)
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_mouse_passthrough(true)
+            .with_active(false);
+        let ready = &mut countdown.ready;
+        ctx.show_viewport_immediate(ViewportId::from_hash_of(COUNTDOWN_TITLE), builder, |ui, _| {
+            if !*ready {
+                *ready = raise_overlay(COUNTDOWN_TITLE, false) && hide_from_captures(COUNTDOWN_TITLE);
+            }
+            egui::CentralPanel::default().show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(RichText::new(left.to_string()).size(34.0).strong());
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Screenshot…").strong());
+                        ui.weak("The hotkey again cancels");
+                    });
+                });
+            });
+        });
     }
 
     /// The picture with what was drawn on it, drawn into its pixels.
@@ -355,12 +529,17 @@ impl App {
     }
 
     /// Where a picture or a recording goes, and the note that links it:
-    /// beside the meeting in the window, if one is (its file is made now if
-    /// it has none yet), else in the Screenshots or Recordings folder.
+    /// beside the meeting in the window, if one is and captures go into
+    /// meetings (its file is made now if it has none yet), else in the
+    /// Screenshots or Recordings folder.
     pub(super) fn capture_place(&mut self, when: When, kind: Kind) -> Result<(PathBuf, Option<String>)> {
-        let in_meeting = !self.open.read_only() && (self.open.path.is_some() || self.worth_a_file() || when.into_notes);
-        if !in_meeting {
-            let dir = self.meetings_dir_path().join(kind.loose_dir());
+        let open = OpenMeetingState {
+            read_only: self.open.read_only(),
+            has_file: self.open.path.is_some(),
+            worth_a_file: self.worth_a_file(),
+        };
+        if !goes_into_meeting(open, when.into_notes, self.capture.settings.into_meeting) {
+            let dir = self.capture.settings.loose_dir(kind, &self.meetings_dir_path());
             let stem = Moment::Loose(when.taken).stem(kind);
             return Ok((files::unused_file(&dir, &stem, kind, &self.capture.pending), None));
         }
@@ -444,71 +623,6 @@ impl App {
             self.unlink_note(&line.meeting, &line.line);
         }
     }
-
-    /// The Screenshots card in Settings.
-    pub(super) fn screenshot_card(&mut self, ui: &mut Ui) {
-        theme::card_title(ui, "Screenshots");
-        ui.weak(
-            "Press the hotkey in any app (or use Screenshot in the sidebar or the menu), then drag over what to \
-             keep, or click a window. Draw on it with the tools beside it, or Pin it to keep it on the screen. \
-             Enter copies it, and it is saved either way: beside the open meeting, with a line in its notes, or \
-             in the Screenshots folder of the meetings folder.",
-        );
-        if let Some(why) = capture::unsupported() {
-            ui.colored_label(ui.visuals().warn_fg_color, why);
-            return;
-        }
-        ui.add_space(6.0);
-        let current = self.capture.settings.hotkey();
-        let capturing = self.capturing_keys(KeysFor::Screenshot);
-        ui.horizontal(|ui| {
-            ui.label("Hotkey");
-            ui.label(RichText::new(current.label()).strong());
-            if capturing {
-                ui.spinner();
-                ui.label("Press the keys to use, then let go… (Esc cancels)");
-                if ui.button("Cancel").clicked()
-                    && let Some(watch) = &self.dict.hotkey
-                {
-                    watch.capture_next(false);
-                }
-                ui.ctx().request_repaint_after(Duration::from_millis(200));
-            } else {
-                if ui
-                    .add_enabled(self.dict.hotkey.is_some(), egui::Button::new("Record keys…"))
-                    .on_hover_text("Hold a combination, e.g. Ctrl+Shift+2, then let go.")
-                    .on_disabled_hover_text("The keyboard can't be watched; see the message at the top.")
-                    .clicked()
-                {
-                    self.record_keys(KeysFor::Screenshot);
-                }
-                if current != capture::default_hotkey() && ui.button("Reset").clicked() {
-                    self.capture.settings.hotkey = capture::default_hotkey().name();
-                }
-            }
-        });
-        if current == self.dict.settings.hotkey() {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "This is also the dictation hotkey: holding it dictates too.",
-            );
-        }
-        if self.dict.hotkey.is_none() {
-            ui.weak(format!(
-                "The hotkey works once the keyboard can be watched. {}",
-                platform::HOTKEY_HINT
-            ));
-        } else if self
-            .dict
-            .hotkey
-            .as_ref()
-            .and_then(platform::HotkeyWatch::system_key)
-            .is_some()
-        {
-            ui.weak("The desktop does not let apps watch the keyboard here, so only the Screenshot buttons work.");
-        }
-        self.recording_settings(ui);
-    }
 }
 
 /// Writes the picture as a PNG file, through a hidden temporary file so a
@@ -524,4 +638,55 @@ fn write_png(image: &Image, path: &std::path::Path) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result.with_context(|| format!("could not write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_hotkey_opens_the_overlay_with_its_own_main_action() {
+        for action in [
+            ShotAction::CopyAndSave,
+            ShotAction::Copy,
+            ShotAction::Save,
+            ShotAction::Pin,
+        ] {
+            assert_eq!(main_action(Trigger::Hotkey(Press::Scroll), action), Main::Scroll);
+            assert_eq!(main_action(Trigger::Hotkey(Press::Record), action), Main::Record);
+            assert_eq!(main_action(Trigger::Hotkey(Press::Pin), action), Main::Pin);
+        }
+        // A plain screenshot, however it was asked for, as the Settings say.
+        for trigger in [
+            Trigger::Hotkey(Press::Screenshot),
+            Trigger::Window,
+            Trigger::Notes,
+            Trigger::Menu,
+        ] {
+            assert_eq!(main_action(trigger, ShotAction::CopyAndSave), Main::Copy);
+            assert_eq!(main_action(trigger, ShotAction::Copy), Main::Copy);
+            assert_eq!(main_action(trigger, ShotAction::Save), Main::Save);
+            assert_eq!(main_action(trigger, ShotAction::Pin), Main::Pin);
+        }
+    }
+
+    #[test]
+    fn captures_go_into_the_open_meeting_only_when_they_should() {
+        let open = |read_only, has_file, worth_a_file| OpenMeetingState {
+            read_only,
+            has_file,
+            worth_a_file,
+        };
+        // As before: a meeting with a file, or worth one, takes them.
+        assert!(goes_into_meeting(open(false, true, false), false, true));
+        assert!(goes_into_meeting(open(false, false, true), false, true));
+        assert!(!goes_into_meeting(open(false, false, false), false, true));
+        // The 📷 above the notes: into the meeting, even an empty new one.
+        assert!(goes_into_meeting(open(false, false, false), true, true));
+        // Not into meetings: always the folder, unless asked for from the notes.
+        assert!(!goes_into_meeting(open(false, true, true), false, false));
+        assert!(goes_into_meeting(open(false, true, true), true, false));
+        // An old .txt transcript never takes them.
+        assert!(!goes_into_meeting(open(true, true, true), true, true));
+    }
 }

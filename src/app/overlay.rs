@@ -3,25 +3,27 @@
 //! to select (its size in pixels shows), drag the handles to change it or
 //! inside to move it; before that, the window under the mouse lights up
 //! and a click takes it (or the whole display). A toolbar beside the
-//! selection has the drawing tools (`drawing.rs`), and copies (Enter, or a
-//! double-click), saves, pins it to the screen, starts a scrolling
-//! screenshot or a screen recording of it, or cancels (Esc); right-click
+//! selection has the drawing tools (`drawing.rs`), and copies, saves, pins
+//! it to the screen, starts a scrolling screenshot or a screen recording of
+//! it, or cancels (Esc); one of those is its main action, which Enter and a
+//! double-click do and whose button stands out (`Main`). Right-click
 //! puts the tool away, else drops the selection, or cancels when there is
 //! none. The thin outline and the small window beside an area being
 //! scrolled or recorded are here too (`outline`, `beside`).
 
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Key, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Align2, Color32, CursorIcon, FontId, Key, Order, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
     ViewportBuilder, ViewportCommand, ViewportId, pos2, vec2,
 };
 
 use super::drawing::Drawing;
-use crate::capture::annotate::Mark;
+use crate::capture::annotate::{Mark, Tool as DrawTool};
 use crate::capture::image::Image;
 use crate::capture::record;
 use crate::capture::scrolling::{self, Area};
 use crate::capture::select::{self, Handle, Mapping};
 use crate::capture::{Shot, hide_from_captures, raise_overlay};
+use crate::settings::DrawStyle;
 
 /// The overlay window's title, by which the system's window is found.
 const TITLE: &str = "Meeting Transcriber screenshot";
@@ -50,7 +52,7 @@ pub(super) struct Picture {
 
 /// How the overlay was closed.
 pub(super) enum Finish {
-    /// Put on the clipboard, and saved.
+    /// Put on the clipboard, and saved unless Settings say only copy.
     Copy(Picture),
     Save(Picture),
     /// Shown above the other windows, where it was on the desktop: its
@@ -65,6 +67,41 @@ pub(super) enum Finish {
     /// A screen recording of the area, from now on.
     Record(Area),
     Cancel,
+}
+
+/// What Enter and a double-click do on the overlay: the button that
+/// stands out on its toolbar. The others are all still there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Main {
+    Copy,
+    Save,
+    Pin,
+    Scroll,
+    Record,
+}
+
+impl Main {
+    fn tool(self) -> Tool {
+        match self {
+            Main::Copy => Tool::Copy,
+            Main::Save => Tool::Save,
+            Main::Pin => Tool::Pin,
+            Main::Scroll => Tool::Scroll,
+            Main::Record => Tool::Record,
+        }
+    }
+}
+
+/// How the overlay starts, from the Settings and what asked for it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Setup {
+    pub main: Main,
+    /// Copy saves the picture too.
+    pub copy_saves: bool,
+    /// The drawing tool in use at first, if any.
+    pub tool: Option<DrawTool>,
+    /// Each drawing tool's colour and size at first.
+    pub style: DrawStyle,
 }
 
 /// A button on the toolbar beside the selection.
@@ -100,17 +137,23 @@ impl Tool {
         }
     }
 
-    fn hint(self) -> &'static str {
-        match self {
+    /// What it does; `copy_saves` says whether Copy saves too, `main`
+    /// whether Enter and a double-click do it.
+    fn hint(self, copy_saves: bool, main: bool) -> String {
+        let what = match self {
             Tool::Cancel => "Esc",
             Tool::Scroll => "A long screenshot: the area scrolls down and its pictures are joined",
-            Tool::Record => {
-                "A video of the area, with sound, until you stop it (Stop beside it, or the screenshot hotkey)"
-            }
+            Tool::Record => "A video of the area, with sound, until you stop it (Stop beside it, or a capture hotkey)",
             Tool::Pin => "Keep the picture on the screen, above other windows (not saved)",
             Tool::Save if cfg!(target_os = "macos") => "Save the picture, not on the clipboard (⌘S)",
             Tool::Save => "Save the picture, not on the clipboard (Ctrl+S)",
-            Tool::Copy => "Copy to the clipboard and save (Enter, or double-click)",
+            Tool::Copy if copy_saves => "Copy to the clipboard and save",
+            Tool::Copy => "Copy to the clipboard, without saving a file",
+        };
+        if main {
+            format!("{what}. Enter, or a double-click inside the selection, does this.")
+        } else {
+            what.to_string()
         }
     }
 }
@@ -119,6 +162,17 @@ impl Tool {
 struct Blocked {
     scroll: Option<&'static str>,
     record: Option<&'static str>,
+}
+
+impl Blocked {
+    /// Why `tool` can't be used now, if it can't.
+    fn why(&self, tool: Tool) -> Option<&'static str> {
+        match tool {
+            Tool::Scroll => self.scroll,
+            Tool::Record => self.record,
+            _ => None,
+        }
+    }
 }
 
 /// What the pointer is doing with the selection.
@@ -146,12 +200,15 @@ pub(super) struct Overlay {
     drawing: Drawing,
     /// The toolbar's size when last shown, to place it.
     toolbar: Vec2,
+    /// What Enter and a double-click do.
+    main: Tool,
+    copy_saves: bool,
     frames: u32,
     raised: bool,
 }
 
 impl Overlay {
-    pub fn new(ctx: &egui::Context, shot: Shot) -> Self {
+    pub fn new(ctx: &egui::Context, shot: Shot, setup: Setup) -> Self {
         // Wider than the graphics card takes (a big display at full
         // resolution): shown a little softer; what is saved is not.
         let max = ctx.input(|i| i.max_texture_side) as u32;
@@ -170,8 +227,10 @@ impl Overlay {
             texture,
             selection: None,
             drag: Drag::Idle,
-            drawing: Drawing::default(),
+            drawing: Drawing::new(setup.tool, setup.style),
             toolbar: vec2(200.0, 36.0),
+            main: setup.main.tool(),
+            copy_saves: setup.copy_saves,
             frames: 0,
             raised: false,
         }
@@ -179,6 +238,11 @@ impl Overlay {
 
     pub fn taken(&self) -> chrono::NaiveDateTime {
         self.shot.taken
+    }
+
+    /// Each drawing tool's colour and size as last used.
+    pub fn draw_style(&self) -> DrawStyle {
+        self.drawing.style()
     }
 
     /// Shows the overlay's window for this frame; Some once it is done.
@@ -233,11 +297,12 @@ impl Overlay {
         let response = ui.allocate_rect(screen, Sense::click_and_drag());
         // While a text is typed, its keys are its own.
         let typing = self.drawing.typing();
-        let (escape, closing, copy, save) = ui.input(|i| {
+        let (escape, closing, enter, copy, save) = ui.input(|i| {
             (
                 i.key_pressed(Key::Escape),
                 i.viewport().close_requested(),
-                !typing && (i.key_pressed(Key::Enter) || i.events.iter().any(|e| matches!(e, egui::Event::Copy))),
+                !typing && i.key_pressed(Key::Enter),
+                !typing && i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
                 !typing && i.modifiers.command && i.key_pressed(Key::S),
             )
         });
@@ -273,6 +338,9 @@ impl Overlay {
                 return Some(Finish::Cancel);
             }
         }
+        let blocked = self.blocked(&map);
+        // The main action, unless it can't be done on this selection.
+        let main = blocked.why(self.main).is_none().then_some(self.main);
         let mut chosen = None;
         if response.double_clicked()
             && self.drawing.kind.is_none()
@@ -280,10 +348,12 @@ impl Overlay {
             && sel.contains(p)
             && !self.drawing.over_mark(map.to_pixel(p))
         {
-            chosen = Some(Tool::Copy);
+            chosen = main;
         }
         if self.selection.is_some() {
-            if copy {
+            if enter {
+                chosen = main;
+            } else if copy {
                 chosen = Some(Tool::Copy);
             } else if save {
                 chosen = Some(Tool::Save);
@@ -294,7 +364,6 @@ impl Overlay {
         if let Some(sel) = self.selection {
             self.drawing.text_editor(ui, &map, sel);
         }
-        let blocked = self.blocked(&map);
         if let Some(sel) = self.selection
             && matches!(self.drag, Drag::Idle)
             && let Some(tool) = self.toolbar(&ctx, sel, screen, &blocked)
@@ -485,14 +554,18 @@ impl Overlay {
                         self.drawing.tool_buttons(ui);
                         ui.separator();
                         for tool in Tool::TOOLBAR {
-                            let why = match tool {
-                                Tool::Scroll => blocked.scroll,
-                                Tool::Record => blocked.record,
-                                _ => None,
+                            let why = blocked.why(tool);
+                            let main = tool == self.main;
+                            // The main action stands out.
+                            let button = if main {
+                                egui::Button::new(RichText::new(tool.label()).strong())
+                                    .fill(ui.visuals().selection.bg_fill)
+                            } else {
+                                egui::Button::new(tool.label())
                             };
                             if ui
-                                .add_enabled(why.is_none(), egui::Button::new(tool.label()))
-                                .on_hover_text(tool.hint())
+                                .add_enabled(why.is_none(), button)
+                                .on_hover_text(tool.hint(self.copy_saves, main))
                                 .on_disabled_hover_text(why.unwrap_or_default())
                                 .clicked()
                             {

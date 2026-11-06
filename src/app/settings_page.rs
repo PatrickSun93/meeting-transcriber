@@ -271,6 +271,24 @@ impl App {
                 "Dictations are saved here as WAV files, each with its text, and listed in the sidebar.",
                 &self.dict.settings.recordings_dir,
             ),
+            Folder::Screenshots => (
+                "Screenshots folder",
+                if self.capture.settings.into_meeting {
+                    "Screenshots taken with no meeting open are saved here."
+                } else {
+                    "Screenshots are saved here."
+                },
+                &self.capture.settings.screenshots_dir,
+            ),
+            Folder::ScreenRecordings => (
+                "Screen recordings folder",
+                if self.capture.settings.into_meeting {
+                    "Screen recordings made with no meeting open are saved here."
+                } else {
+                    "Screen recordings are saved here."
+                },
+                &self.capture.settings.recordings_dir,
+            ),
         };
         let is_default = setting.is_empty();
         let env_dir = (folder == Folder::Models).then(models::env_models_dir).flatten();

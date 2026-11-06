@@ -1,6 +1,8 @@
 //! Screen recording on macOS: ScreenCaptureKit records the area straight
 //! into the MP4 file (`SCRecordingOutput`, macOS 15 and later), H.264 from
-//! the Mac's own encoder, with the pointer, and with the computer's sound
+//! the Mac's own encoder (which picks its own bitrate: the recording output
+//! has no setting for it), with the pointer or without, at the chosen
+//! frames a second, and with the computer's sound
 //! and the microphone, each on an audio track of its own. This app's
 //! windows (the recording's controls) are left out, as in screenshots.
 //! Frames carry the time they were taken, so a busy Mac drops some rather
@@ -18,7 +20,7 @@ use screencapturekit::recording_output::{
     SCRecordingOutputFileType,
 };
 
-use super::{FPS, Recorded, Sound, video_size};
+use super::{Options, Recorded, video_size};
 use crate::capture::macos::{PERMISSION_HINT, check_allowed, display_at, kit_filter};
 use crate::capture::scrolling::Area;
 
@@ -48,7 +50,8 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn start(area: &Area, path: &Path, sound: Sound) -> Result<Recorder> {
+    pub fn start(area: &Area, path: &Path, options: Options) -> Result<Recorder> {
+        let sound = options.sound;
         check_allowed()?;
         let scale = f64::from(area.display.scale.max(0.25));
         let [x, y] = area.center();
@@ -61,8 +64,8 @@ impl Recorder {
             .with_source_rect(CGRect::new(points(r.x), points(r.y), points(r.width), points(r.height)))
             .with_width(width)
             .with_height(height)
-            .with_shows_cursor(true)
-            .with_minimum_frame_interval(&CMTime::new(1, FPS as i32))
+            .with_shows_cursor(options.cursor)
+            .with_minimum_frame_interval(&CMTime::new(1, options.fps() as i32))
             .with_captures_audio(sound.computer)
             .with_excludes_current_process_audio(true)
             .with_sample_rate(SAMPLE_RATE)
