@@ -60,10 +60,12 @@ screencapturekit = { version = "11", features = ["macos_14_0"] }
 whisper-rs = { version = "0.16", features = ["metal"] }
 # Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item and the
 # sounds (AppKit). Screenshots: the displays and their windows (Quartz), the
-# overlay above the menu bar and handing the focus back (AppKit).
+# overlay above the menu bar and handing the focus back (AppKit); scrolling
+# screenshots turn the wheel (highsierra: Quartz's scroll events, macOS
+# 10.13 and later).
 # All already built for winit and eframe.
 core-foundation = "0.9"
-core-graphics = "0.23"
+core-graphics = { version = "0.23", features = ["highsierra"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",

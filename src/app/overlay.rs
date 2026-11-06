@@ -3,8 +3,9 @@
 //! to select (its size in pixels shows), drag the handles to change it or
 //! inside to move it; before that, the window under the mouse lights up
 //! and a click takes it (or the whole display). A toolbar beside the
-//! selection copies (Enter, or a double-click), saves, or cancels (Esc);
-//! right-click drops the selection, or cancels when there is none.
+//! selection copies (Enter, or a double-click), saves, starts a scrolling
+//! screenshot of it, or cancels (Esc); right-click drops the selection, or
+//! cancels when there is none.
 
 use eframe::egui::{
     self, Align2, Color32, CursorIcon, FontId, Key, Order, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -12,6 +13,7 @@ use eframe::egui::{
 };
 
 use crate::capture::image::Image;
+use crate::capture::scrolling::{self, Area};
 use crate::capture::select::{self, Handle, Mapping};
 use crate::capture::{Shot, raise_overlay};
 
@@ -35,6 +37,8 @@ pub(super) enum Finish {
     /// Put on the clipboard, and saved.
     Copy(Image),
     Save(Image),
+    /// A scrolling screenshot of the area, from now on.
+    Scroll(Area),
     Cancel,
 }
 
@@ -42,17 +46,19 @@ pub(super) enum Finish {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Cancel,
+    Scroll,
     Save,
     Copy,
 }
 
 impl Tool {
     /// Left to right.
-    const TOOLBAR: [Tool; 3] = [Tool::Cancel, Tool::Save, Tool::Copy];
+    const TOOLBAR: [Tool; 4] = [Tool::Cancel, Tool::Scroll, Tool::Save, Tool::Copy];
 
     fn label(self) -> &'static str {
         match self {
             Tool::Cancel => "Cancel",
+            Tool::Scroll => "Scroll",
             Tool::Save => "Save",
             Tool::Copy => "Copy",
         }
@@ -61,6 +67,7 @@ impl Tool {
     fn hint(self) -> &'static str {
         match self {
             Tool::Cancel => "Esc",
+            Tool::Scroll => "A long screenshot: the area scrolls down and its pictures are joined",
             Tool::Save if cfg!(target_os = "macos") => "Save the picture, not on the clipboard (⌘S)",
             Tool::Save => "Save the picture, not on the clipboard (Ctrl+S)",
             Tool::Copy => "Copy to the clipboard and save (Enter, or double-click)",
@@ -144,12 +151,11 @@ impl Overlay {
         })
     }
 
-    /// Sets the window over the display exactly, which the first guess
-    /// misses where displays scale differently, and raises it.
+    /// Sets the window over the display exactly and raises it.
     fn place(&mut self, ctx: &egui::Context) {
         self.frames += 1;
         if !self.raised {
-            self.raised = raise_overlay(TITLE);
+            self.raised = raise_overlay(TITLE, true);
             if self.raised {
                 ctx.send_viewport_cmd(ViewportCommand::Focus);
             }
@@ -157,18 +163,10 @@ impl Overlay {
         if self.frames > PLACE_FRAMES {
             return;
         }
-        let ppp = ctx.pixels_per_point();
         let d = self.shot.display;
-        let want = Rect::from_min_size(
-            pos2(d.origin_px[0] as f32 / ppp, d.origin_px[1] as f32 / ppp),
-            vec2(self.shot.image.width as f32 / ppp, self.shot.image.height as f32 / ppp),
-        );
-        if let Some(have) = ctx.input(|i| i.viewport().inner_rect)
-            && (have.min.distance(want.min) > 1.0 || (have.size() - want.size()).length() > 1.0)
-        {
-            ctx.send_viewport_cmd(ViewportCommand::OuterPosition(want.min));
-            ctx.send_viewport_cmd(ViewportCommand::InnerSize(want.size()));
-        }
+        let origin = pos2(d.origin_px[0] as f32, d.origin_px[1] as f32);
+        let size = vec2(self.shot.image.width as f32, self.shot.image.height as f32);
+        keep_at(ctx, origin, Some(size));
         ctx.request_repaint();
     }
 
@@ -221,24 +219,32 @@ impl Overlay {
         }
 
         self.paint(ui, screen, &map, hovered);
+        let scrollable = self
+            .selection
+            .and_then(|s| map.to_pixels(s))
+            .is_some_and(|px| px.height >= scrolling::MIN_HEIGHT);
         if let Some(sel) = self.selection
             && matches!(self.drag, Drag::Idle)
-            && let Some(tool) = self.toolbar(&ctx, sel, screen)
+            && let Some(tool) = self.toolbar(&ctx, sel, screen, scrollable)
         {
             chosen = Some(tool);
         }
         if response.hovered() || response.dragged() {
             ctx.set_cursor_icon(self.cursor(pointer));
         }
-        let picture = || {
-            self.selection
-                .and_then(|s| map.to_pixels(s))
-                .map(|px| self.shot.image.crop(px))
-        };
+        let pixels = self.selection.and_then(|s| map.to_pixels(s));
+        let picture = || pixels.map(|px| self.shot.image.crop(px));
         match chosen? {
             Tool::Cancel => Some(Finish::Cancel),
             Tool::Copy => picture().map(Finish::Copy),
             Tool::Save => picture().map(Finish::Save),
+            Tool::Scroll => pixels.map(|rect| {
+                Finish::Scroll(Area {
+                    display: self.shot.display,
+                    display_size: [self.shot.image.width, self.shot.image.height],
+                    rect,
+                })
+            }),
         }
     }
 
@@ -330,7 +336,8 @@ impl Overlay {
     }
 
     /// The toolbar beside the selection; the tool clicked, if one was.
-    fn toolbar(&mut self, ctx: &egui::Context, sel: Rect, screen: Rect) -> Option<Tool> {
+    /// Scroll is greyed out when the selection is too short to scroll.
+    fn toolbar(&mut self, ctx: &egui::Context, sel: Rect, screen: Rect, scrollable: bool) -> Option<Tool> {
         let at = select::toolbar_origin(sel, self.toolbar, screen, GAP);
         let mut chosen = None;
         let shown = egui::Area::new(egui::Id::unique("screenshot toolbar"))
@@ -340,7 +347,13 @@ impl Overlay {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for tool in Tool::TOOLBAR {
-                            if ui.button(tool.label()).on_hover_text(tool.hint()).clicked() {
+                            let enabled = tool != Tool::Scroll || scrollable;
+                            if ui
+                                .add_enabled(enabled, egui::Button::new(tool.label()))
+                                .on_hover_text(tool.hint())
+                                .on_disabled_hover_text("Select a taller area to scroll")
+                                .clicked()
+                            {
                                 chosen = Some(tool);
                             }
                         }
@@ -369,6 +382,25 @@ impl Overlay {
             Some(Handle::TopLeft | Handle::BottomRight) => CursorIcon::ResizeNwSe,
             Some(Handle::TopRight | Handle::BottomLeft) => CursorIcon::ResizeNeSw,
         }
+    }
+}
+
+/// Moves the viewport being drawn to `origin` on the desktop (in its
+/// pixels), and with `size` sizes it, when it is more than a point off: the
+/// first guess misses where displays scale differently.
+pub(super) fn keep_at(ctx: &egui::Context, origin: Pos2, size: Option<Vec2>) {
+    let ppp = ctx.pixels_per_point();
+    let Some(have) = ctx.input(|i| i.viewport().inner_rect) else {
+        return;
+    };
+    let min = (origin.to_vec2() / ppp).to_pos2();
+    if have.min.distance(min) > 1.0 {
+        ctx.send_viewport_cmd(ViewportCommand::OuterPosition(min));
+    }
+    if let Some(size) = size.map(|s| s / ppp)
+        && (have.size() - size).length() > 1.0
+    {
+        ctx.send_viewport_cmd(ViewportCommand::InnerSize(size));
     }
 }
 

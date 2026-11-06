@@ -1,8 +1,8 @@
 //! Screenshots in the window: taking one (the hotkey, the Screenshot
 //! buttons, the menu bar or tray item), the overlay while choosing what to
-//! keep (`overlay.rs`), then saving it: beside the open meeting with a line
-//! in its notes, or in the Screenshots folder; and the Screenshots card in
-//! Settings.
+//! keep (`overlay.rs`) or a scrolling screenshot of it (`scrolling.rs`),
+//! then saving it: beside the open meeting with a line in its notes, or in
+//! the Screenshots folder; and the Screenshots card in Settings.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -13,6 +13,7 @@ use eframe::egui::{self, RichText, Ui};
 
 use super::dictation::KeysFor;
 use super::overlay::{Finish, Overlay};
+use super::scrolling::Scrolling;
 use super::thumbnails::Thumbnails;
 use super::{App, platform, theme};
 use crate::capture::files::{self, Moment};
@@ -37,11 +38,13 @@ struct Saved {
     path: PathBuf,
     copied: bool,
     result: Result<()>,
+    /// Said after the notice that it was saved.
+    aside: Option<String>,
 }
 
 /// When a screenshot was taken, and whether it goes into the notes.
 #[derive(Debug, Clone, Copy)]
-struct When {
+pub(super) struct When {
     taken: chrono::NaiveDateTime,
     /// The recording meeting's clock, in seconds.
     clock: Option<u64>,
@@ -63,6 +66,7 @@ pub(super) struct CaptureState {
     taking: Option<Taking>,
     grabbing: Option<Receiver<Result<Shot>>>,
     overlay: Option<Overlay>,
+    pub scrolling: Option<Scrolling>,
     saved: (Sender<Saved>, Receiver<Saved>),
     /// Pictures being written, so a second one does not take the same name.
     pending: Vec<PathBuf>,
@@ -76,6 +80,7 @@ impl CaptureState {
             taking: None,
             grabbing: None,
             overlay: None,
+            scrolling: None,
             saved: crossbeam_channel::unbounded(),
             pending: Vec::new(),
             thumbnails: Thumbnails::default(),
@@ -85,9 +90,11 @@ impl CaptureState {
 
 impl App {
     /// Takes a screenshot of the display under the mouse and shows the
-    /// overlay to choose what to keep. One at a time.
+    /// overlay to choose what to keep. One at a time: asked for during a
+    /// scrolling screenshot, it stops that one.
     pub(super) fn start_screenshot(&mut self, trigger: Trigger) {
         if self.capture.taking.is_some() {
+            self.stop_scrolling();
             return;
         }
         if let Some(why) = capture::unsupported() {
@@ -147,19 +154,25 @@ impl App {
                 }
             }
         }
-        if self.capture.overlay.is_some() {
-            // The overlay is drawn by the window's frame, which a hidden
-            // window would skip.
+        self.scrolling_logic(ctx);
+        if self.capture.overlay.is_some() || self.capture.scrolling.is_some() {
+            // The overlay and the scrolling windows are drawn by the
+            // window's frame, which a hidden window would skip.
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
-            ctx.request_repaint();
+            if self.capture.overlay.is_some() {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
         }
         let saved: Vec<Saved> = self.capture.saved.1.try_iter().collect();
         for s in saved {
             self.capture.pending.retain(|p| *p != s.path);
             let name = s.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let aside = s.aside.map(|a| format!(" ({a})")).unwrap_or_default();
             match s.result {
-                Ok(()) if s.copied => self.notify(format!("Copied, and saved as {name}"), Some(s.path)),
-                Ok(()) => self.notify(format!("Saved {name}"), Some(s.path)),
+                Ok(()) if s.copied => self.notify(format!("Copied, and saved as {name}{aside}"), Some(s.path)),
+                Ok(()) => self.notify(format!("Saved {name}{aside}"), Some(s.path)),
                 Err(e) => {
                     self.report(format!("Could not save the screenshot {name}: {e:#}"));
                     self.show_window(ctx);
@@ -168,8 +181,10 @@ impl App {
         }
     }
 
-    /// The overlay's window, while it is up. Called from the window's frame.
+    /// The overlay's window while it is up, and the scrolling screenshot's.
+    /// Called from the window's frame.
     pub(super) fn capture_overlay(&mut self, ctx: &egui::Context) {
+        self.scrolling_windows(ctx);
         let Some(overlay) = self.capture.overlay.as_mut() else {
             return;
         };
@@ -183,21 +198,24 @@ impl App {
             .taking
             .as_ref()
             .map_or((None, false), |t| (t.clock, t.into_notes));
-        self.end_screenshot(ctx);
         let when = When {
             taken,
             clock,
             into_notes,
         };
-        match finish {
-            Finish::Cancel => {}
-            Finish::Copy(image) => self.keep_screenshot(image, when, true),
-            Finish::Save(image) => self.keep_screenshot(image, when, false),
-        }
+        let (image, copy) = match finish {
+            // Still taking: the focus goes back once it is done.
+            Finish::Scroll(area) => return self.start_scrolling(area, when),
+            Finish::Cancel => return self.end_screenshot(ctx),
+            Finish::Copy(image) => (image, true),
+            Finish::Save(image) => (image, false),
+        };
+        self.end_screenshot(ctx);
+        self.keep_screenshot(image, when, copy, None);
     }
 
     /// Hands the focus back, and the window if it was hidden for the picture.
-    fn end_screenshot(&mut self, ctx: &egui::Context) {
+    pub(super) fn end_screenshot(&mut self, ctx: &egui::Context) {
         if let Some(taking) = self.capture.taking.take() {
             if taking.show_window_after {
                 self.show_window(ctx);
@@ -231,8 +249,9 @@ impl App {
     }
 
     /// Saves the picture (on a thread), puts it on the clipboard with
-    /// `copy`, and links it in the open meeting's notes.
-    fn keep_screenshot(&mut self, image: Image, when: When, copy: bool) {
+    /// `copy`, and links it in the open meeting's notes; `aside` is said
+    /// once it is saved.
+    pub(super) fn keep_screenshot(&mut self, image: Image, when: When, copy: bool, aside: Option<String>) {
         let (path, note) = match self.screenshot_place(when) {
             Ok(place) => place,
             Err(e) => {
@@ -254,6 +273,7 @@ impl App {
                     path: file,
                     copied,
                     result,
+                    aside,
                 });
                 ctx.request_repaint();
             });

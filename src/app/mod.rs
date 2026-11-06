@@ -10,6 +10,7 @@ mod meeting_page;
 mod overlay;
 mod path_prompt;
 mod reader;
+mod scrolling;
 mod settings_page;
 mod sidebar;
 mod theme;

@@ -63,6 +63,9 @@ Transcripts go to `Documents/Meeting Transcripts` unless changed in Settings
   `capture_hotkey`) and where pictures go; `keys` marks the screenshot
   hotkey. On the Mac they need `screen_recording` allowed for the app; on
   Linux only X11 works. A failed screenshot shows its reason in the window.
+  A scrolling screenshot (Scroll on the overlay) that does not scroll by
+  itself on the Mac lacks `accessibility`; its window then says to scroll
+  by hand.
 
 ## Developing
 

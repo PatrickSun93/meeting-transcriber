@@ -2,7 +2,9 @@
 //! (`BitBlt` from the screen, in physical pixels: winit makes the app
 //! per-monitor DPI aware), its scale from its DPI, and the windows on it
 //! from `EnumWindows` with their visible frames from DWM. No permission is
-//! needed.
+//! needed. For a scrolling screenshot, a part of the screen copied again
+//! and again, the wheel turned with `SendInput`, and this app's windows
+//! kept out of the pictures with their display affinity.
 
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -16,13 +18,18 @@ use windows::Win32::Graphics::Gdi::{
     MonitorFromPoint, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowW, GWL_EXSTYLE, GetCursorPos, GetForegroundWindow, GetWindowLongW, GetWindowTextLengthW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, WS_EX_TRANSPARENT,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SetCursorPos, SetForegroundWindow,
+    SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WHEEL_DELTA, WS_EX_TRANSPARENT,
 };
 use windows::core::{BOOL, HSTRING, PCWSTR};
 
 use super::image::{Image, Packing};
+use super::scrolling::Area;
 use super::select::PxRect;
 use super::{Display, Shot};
 
@@ -230,17 +237,123 @@ pub fn restore_front_app() {
     }
 }
 
-/// Brings the overlay window (found by its title) to the front with the
-/// keyboard; it is always on top already. False while it does not exist yet.
-pub fn raise_overlay(title: &str) -> bool {
-    // SAFETY: a lookup by title, and a request about the window found.
-    unsafe {
-        match FindWindowW(PCWSTR::null(), &HSTRING::from(title)) {
-            Ok(window) if !window.is_invalid() => {
-                let _ = SetForegroundWindow(window);
-                true
-            }
-            _ => false,
+/// This app's window with `title`, once it exists.
+fn window_titled(title: &str) -> Option<HWND> {
+    // SAFETY: a lookup by title.
+    match unsafe { FindWindowW(PCWSTR::null(), &HSTRING::from(title)) } {
+        Ok(window) if !window.is_invalid() => Some(window),
+        _ => None,
+    }
+}
+
+/// Brings the overlay window (found by its title) to the front, with
+/// `focus` with the keyboard; it is always on top already. False while it
+/// does not exist yet.
+pub fn raise_overlay(title: &str, focus: bool) -> bool {
+    let Some(window) = window_titled(title) else {
+        return false;
+    };
+    if focus {
+        // SAFETY: a request about a window of this process.
+        unsafe {
+            let _ = SetForegroundWindow(window);
         }
+    }
+    true
+}
+
+/// Leaves the window with `title` out of screen copies, this app's own
+/// included (Windows 10 2004 and later; older ones keep it in). False
+/// while it does not exist yet.
+pub fn hide_from_captures(title: &str) -> bool {
+    let Some(window) = window_titled(title) else {
+        return false;
+    };
+    // SAFETY: a setting of a window of this process.
+    unsafe {
+        let _ = SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
+    }
+    true
+}
+
+/// A scrolling screenshot's area, read again and again, and the wheel
+/// turned over it.
+pub struct Region {
+    /// On the virtual screen, in pixels.
+    rect: RECT,
+    /// Pixels per point on the area's monitor.
+    scale: f32,
+}
+
+impl Region {
+    pub fn new(area: &Area) -> Result<Region> {
+        let [left, top, right, bottom] = area.desktop();
+        Ok(Region {
+            rect: RECT {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            scale: area.display.scale.max(0.25),
+        })
+    }
+
+    /// The area as it is now.
+    pub fn grab(&mut self) -> Result<Image> {
+        copy_screen(self.rect)
+    }
+
+    /// Windows lets any app turn the wheel.
+    pub fn cannot_scroll(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Where the mouse pointer is, in the desktop's pixels.
+    pub fn pointer(&self) -> Option<[i32; 2]> {
+        let mut p = POINT::default();
+        // SAFETY: a plain query into a POINT.
+        unsafe { GetCursorPos(&mut p) }.ok()?;
+        Some([p.x, p.y])
+    }
+
+    /// Puts the pointer at `at` (desktop pixels), where the wheel scrolls.
+    pub fn move_pointer(&self, [x, y]: [i32; 2]) {
+        // SAFETY: a plain request.
+        unsafe {
+            let _ = SetCursorPos(x, y);
+        }
+    }
+
+    /// Scrolls what is under the pointer down by about `distance` pixels:
+    /// whole notches of the wheel, each some three lines in most apps.
+    pub fn scroll(&self, distance: u32) -> Result<(), &'static str> {
+        let notches = (distance as f32 / (60.0 * self.scale)).round().clamp(1.0, 10.0) as usize;
+        let notch = INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    // Negative: down the page.
+                    mouseData: (-(WHEEL_DELTA as i32)) as u32,
+                    dwFlags: MOUSEEVENTF_WHEEL,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let inputs = vec![notch; notches];
+        // SAFETY: the inputs are plain mouse events of the given size.
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        if sent as usize != notches {
+            // Windows does not let a normal app scroll one running as
+            // administrator.
+            return Err(
+                "Windows did not let the app scroll (is an administrator's window under the area?), \
+                 so scroll by hand.",
+            );
+        }
+        Ok(())
     }
 }

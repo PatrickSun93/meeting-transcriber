@@ -2,7 +2,9 @@
 //! (macOS 14 and later; Quartz's display image on macOS 13), without this
 //! app's own windows, which needs the "Screen & System Audio Recording"
 //! permission; the windows on it from Quartz's window list; and the overlay
-//! raised above the menu bar, with the focus handed back afterwards.
+//! raised above the menu bar, with the focus handed back afterwards. For a
+//! scrolling screenshot, a part of a display read again and again, and
+//! scroll wheel events, which need Accessibility permission.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -13,9 +15,10 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_graphics::display::CGDisplay;
-use core_graphics::event::CGEvent;
+use core_graphics::event::{CGEvent, CGEventTapLocation, ScrollEventUnit};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use core_graphics::geometry::{CGPoint, CGRect};
+use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+use core_graphics::image::CGImage;
 use core_graphics::window::{
     kCGWindowBounds, kCGWindowLayer, kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly,
     kCGWindowOwnerPID,
@@ -31,16 +34,22 @@ use screencapturekit::prelude::*;
 use screencapturekit::screenshot_manager::{CGImageExt as _, SCScreenshotManager};
 
 use super::image::{Image, Packing};
+use super::scrolling::Area;
 use super::select::PxRect;
 use super::{Display, Shot};
 
 const PERMISSION_HINT: &str = "Screenshots need the Screen Recording permission: allow Meeting Transcriber in \
      System Settings > Privacy & Security > Screen & System Audio Recording, then quit and reopen it.";
+const ACCESSIBILITY_HINT: &str = "Scroll by hand: for the app to scroll, allow Meeting Transcriber in System \
+     Settings > Privacy & Security > Accessibility (as for auto paste).";
+const NO_SCROLL_EVENT: &str = "The Mac did not make a scroll event, so scroll by hand.";
 
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+    fn CGPreflightPostEventAccess() -> bool;
+    fn CGRequestPostEventAccess() -> bool;
     fn CGImageGetBitmapInfo(image: *const c_void) -> u32;
 }
 
@@ -50,20 +59,30 @@ pub fn allowed() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() }
 }
 
-pub fn grab() -> Result<Shot> {
+/// Fails, asking for the permission, when the screen may not be read.
+fn check_allowed() -> Result<()> {
     if !allowed() {
         // Adds the app to the list in System Settings, switched off.
-        // SAFETY: as above; it may show the system's prompt.
+        // SAFETY: a plain request about this process; it may show the
+        // system's prompt.
         unsafe { CGRequestScreenCaptureAccess() };
         bail!("{PERMISSION_HINT}");
     }
-    let mouse = mouse_location()?;
+    Ok(())
+}
+
+/// The display that holds `point` (in Quartz's global points).
+fn display_at(point: CGPoint) -> Result<Option<u32>> {
     let ids = CGDisplay::active_displays().map_err(|e| anyhow!("could not list the displays (error {e})"))?;
-    let id = ids
+    Ok(ids
         .iter()
         .copied()
-        .find(|id| contains(&CGDisplay::new(*id).bounds(), mouse))
-        .unwrap_or_else(|| CGDisplay::main().id);
+        .find(|id| contains(&CGDisplay::new(*id).bounds(), point)))
+}
+
+pub fn grab() -> Result<Shot> {
+    check_allowed()?;
+    let id = display_at(mouse_location()?)?.unwrap_or_else(|| CGDisplay::main().id);
     let display = CGDisplay::new(id);
     let bounds = display.bounds();
     let (width, height) = display
@@ -118,6 +137,15 @@ fn at_least_macos(major: isize) -> bool {
 /// The display through ScreenCaptureKit, at its full resolution, without
 /// this app's windows or the mouse pointer.
 fn screencapturekit_image(id: u32, width: u32, height: u32) -> Result<Image> {
+    let config = SCStreamConfiguration::new()
+        .with_width(width)
+        .with_height(height)
+        .with_shows_cursor(false);
+    kit_capture(&kit_filter(id)?, &config)
+}
+
+/// What ScreenCaptureKit is to show: the display, without this app.
+fn kit_filter(id: u32) -> Result<SCContentFilter> {
     let content = SCShareableContent::get().map_err(|e| anyhow!("{PERMISSION_HINT} ({e})"))?;
     let display = content
         .displays()
@@ -131,17 +159,16 @@ fn screencapturekit_image(id: u32, width: u32, height: u32) -> Result<Image> {
         .filter(|a| a.process_id() == me)
         .collect();
     let ours: Vec<&SCRunningApplication> = ours.iter().collect();
-    let filter = SCContentFilter::create()
+    SCContentFilter::create()
         .with_display(&display)
         .with_excluding_applications(&ours, &[])
         .build()
-        .context("could not set up the screenshot")?;
-    let config = SCStreamConfiguration::new()
-        .with_width(width)
-        .with_height(height)
-        .with_shows_cursor(false);
+        .context("could not set up the screenshot")
+}
+
+fn kit_capture(filter: &SCContentFilter, config: &SCStreamConfiguration) -> Result<Image> {
     let image =
-        SCScreenshotManager::capture_image(&filter, &config).map_err(|e| anyhow!("the screenshot failed: {e}"))?;
+        SCScreenshotManager::capture_image(filter, config).map_err(|e| anyhow!("the screenshot failed: {e}"))?;
     let rgba = image
         .rgba_data()
         .map_err(|e| anyhow!("could not read the screenshot: {e}"))?;
@@ -155,7 +182,11 @@ fn screencapturekit_image(id: u32, width: u32, height: u32) -> Result<Image> {
 /// The display through Quartz (macOS 13, which has no ScreenCaptureKit
 /// screenshots). This app's windows are in it.
 fn quartz_image(display: &CGDisplay) -> Result<Image> {
-    let image = display.image().context(PERMISSION_HINT)?;
+    quartz_pixels(&display.image().context(PERMISSION_HINT)?)
+}
+
+/// A Quartz image's pixels.
+fn quartz_pixels(image: &CGImage) -> Result<Image> {
     if image.bits_per_pixel() != 32 || image.bits_per_component() != 8 {
         bail!(
             "the display's pixels are in a format this app does not read ({} bits)",
@@ -163,7 +194,7 @@ fn quartz_image(display: &CGDisplay) -> Result<Image> {
         );
     }
     // A reference to the wrapper is the `CGImageRef` itself.
-    let image_ref: *const c_void = (&*image as *const core_graphics::image::CGImageRef).cast();
+    let image_ref: *const c_void = (&**image as *const core_graphics::image::CGImageRef).cast();
     // SAFETY: the image is alive for the call.
     let info = unsafe { CGImageGetBitmapInfo(image_ref) };
     let data = image.data();
@@ -247,6 +278,109 @@ fn windows_on(display: &CGRect, scale: f64, width: u32, height: u32) -> Vec<PxRe
     windows
 }
 
+/// Where a scrolling screenshot's pictures come from: the part of the
+/// display, through ScreenCaptureKit (set up once) or Quartz on macOS 13.
+enum Source {
+    Kit {
+        filter: SCContentFilter,
+        config: SCStreamConfiguration,
+    },
+    /// The part of the display, in its points.
+    Quartz { display: CGDisplay, rect: CGRect },
+}
+
+/// A scrolling screenshot's area, read again and again, and the wheel
+/// turned over it.
+pub struct Region {
+    source: Source,
+    /// Pixels per point on the area's display.
+    scale: f64,
+}
+
+impl Region {
+    pub fn new(area: &Area) -> Result<Region> {
+        check_allowed()?;
+        let scale = f64::from(area.display.scale.max(0.25));
+        let [x, y] = area.center();
+        let id = display_at(CGPoint::new(f64::from(x) / scale, f64::from(y) / scale))?
+            .context("the display of the area is no longer there")?;
+        let r = area.rect;
+        let points = |v: u32| f64::from(v) / scale;
+        let source = if at_least_macos(14) {
+            let rect = screencapturekit::cg::CGRect::new(points(r.x), points(r.y), points(r.width), points(r.height));
+            let config = SCStreamConfiguration::new()
+                .with_source_rect(rect)
+                .with_width(r.width)
+                .with_height(r.height)
+                .with_shows_cursor(false);
+            Source::Kit {
+                filter: kit_filter(id)?,
+                config,
+            }
+        } else {
+            let rect = CGRect::new(
+                &CGPoint::new(points(r.x), points(r.y)),
+                &CGSize::new(points(r.width), points(r.height)),
+            );
+            Source::Quartz {
+                display: CGDisplay::new(id),
+                rect,
+            }
+        };
+        Ok(Region { source, scale })
+    }
+
+    /// The area as it is now.
+    pub fn grab(&mut self) -> Result<Image> {
+        match &self.source {
+            Source::Kit { filter, config } => kit_capture(filter, config),
+            Source::Quartz { display, rect } => quartz_pixels(&display.image_for_rect(*rect).context(PERMISSION_HINT)?),
+        }
+    }
+
+    /// Why the app cannot turn the wheel, if it cannot: posting events
+    /// needs Accessibility permission (asked for here).
+    pub fn cannot_scroll(&self) -> Option<&'static str> {
+        // SAFETY: plain queries and requests about this process.
+        unsafe {
+            if CGPreflightPostEventAccess() {
+                return None;
+            }
+            CGRequestPostEventAccess();
+        }
+        Some(ACCESSIBILITY_HINT)
+    }
+
+    /// Where the mouse pointer is, in the desktop's pixels.
+    pub fn pointer(&self) -> Option<[i32; 2]> {
+        let p = mouse_location().ok()?;
+        Some([(p.x * self.scale).round() as i32, (p.y * self.scale).round() as i32])
+    }
+
+    /// Puts the pointer at `at` (desktop pixels), where the wheel scrolls.
+    pub fn move_pointer(&self, [x, y]: [i32; 2]) {
+        let at = CGPoint::new(f64::from(x) / self.scale, f64::from(y) / self.scale);
+        let _ = CGDisplay::warp_mouse_cursor_position(at);
+    }
+
+    /// Scrolls what is under the pointer down by about `distance` pixels.
+    pub fn scroll(&self, distance: u32) -> Result<(), &'static str> {
+        let points = ((f64::from(distance) / self.scale).round() as i32).max(1);
+        let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|()| NO_SCROLL_EVENT)?;
+        // Negative: down the page.
+        let event = CGEvent::new_scroll_event(source, ScrollEventUnit::PIXEL, 1, -points, 0, 0)
+            .map_err(|()| NO_SCROLL_EVENT)?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    }
+}
+
+/// Nothing to do: ScreenCaptureKit leaves all of this app's windows out,
+/// and on macOS 13 the scrolling windows stay outside the area.
+pub fn hide_from_captures(_title: &str) -> bool {
+    true
+}
+
 thread_local! {
     /// The app in front before the overlay took the focus.
     static FRONT: RefCell<Option<Retained<NSRunningApplication>>> = const { RefCell::new(None) };
@@ -269,9 +403,9 @@ pub fn restore_front_app() {
 }
 
 /// Puts the overlay window (found by its title) above the menu bar and the
-/// Dock, on every Space including a full-screen app's, and gives it the
-/// keyboard. False while the window does not exist yet.
-pub fn raise_overlay(title: &str) -> bool {
+/// Dock, on every Space including a full-screen app's, and with `focus`
+/// gives it the keyboard. False while the window does not exist yet.
+pub fn raise_overlay(title: &str, focus: bool) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
@@ -284,10 +418,14 @@ pub fn raise_overlay(title: &str) -> bool {
     window.setCollectionBehavior(
         NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary,
     );
-    // `activate` needs macOS 14; the app runs on 13.
-    #[allow(deprecated)]
-    app.activateIgnoringOtherApps(true);
-    window.makeKeyAndOrderFront(None);
+    if focus {
+        // `activate` needs macOS 14; the app runs on 13.
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+        window.makeKeyAndOrderFront(None);
+    } else {
+        window.orderFrontRegardless();
+    }
     true
 }
 

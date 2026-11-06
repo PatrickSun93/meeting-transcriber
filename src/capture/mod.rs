@@ -3,12 +3,15 @@
 //! and the plain logic around it, here so its tests run everywhere: the
 //! pictures and PNG files (`image.rs`), the selection's geometry
 //! (`select.rs`), and where screenshots are saved and how notes link them
-//! (`files.rs`). The overlay that shows a screenshot is the window's
-//! (`app/overlay.rs`).
+//! (`files.rs`). A scrolling screenshot takes an area again and again as it
+//! scrolls (`scrolling.rs`) and stitches the pictures (`stitch.rs`). The
+//! overlay that shows a screenshot is the window's (`app/overlay.rs`).
 
 pub mod files;
 pub mod image;
+pub mod scrolling;
 pub mod select;
+pub mod stitch;
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod linux;
@@ -24,7 +27,7 @@ use macos as imp;
 #[cfg(windows)]
 use windows as imp;
 
-pub use imp::{raise_overlay, remember_front_app, restore_front_app};
+pub use imp::{hide_from_captures, raise_overlay, remember_front_app, restore_front_app};
 
 use crate::dictation::hotkey::{Hotkey, Mods, Shortcut};
 use image::Image;
