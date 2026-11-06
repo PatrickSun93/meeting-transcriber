@@ -64,7 +64,8 @@ impl LowPass {
     }
 }
 
-/// Streaming resampler to 16 kHz: low-pass filter, then linear interpolation.
+/// Streaming resampler, to 16 kHz unless told otherwise: low-pass filter,
+/// then linear interpolation.
 ///
 /// Keeps its state between calls, so audio delivered in arbitrary block
 /// sizes resamples the same as if it arrived in one piece.
@@ -78,9 +79,15 @@ pub struct Resampler {
 }
 
 impl Resampler {
+    /// To Whisper's 16 kHz.
     pub fn new(input_rate: u32) -> Self {
-        let filters = (input_rate > SAMPLE_RATE).then(|| {
-            let cutoff = SAMPLE_RATE as f32 * 0.45;
+        Self::to(input_rate, SAMPLE_RATE)
+    }
+
+    /// From `input_rate` to `output_rate`, frames per second.
+    pub fn to(input_rate: u32, output_rate: u32) -> Self {
+        let filters = (input_rate > output_rate).then(|| {
+            let cutoff = output_rate as f32 * 0.45;
             [
                 LowPass::new(input_rate as f32, cutoff),
                 LowPass::new(input_rate as f32, cutoff),
@@ -88,7 +95,7 @@ impl Resampler {
         });
         Self {
             filters,
-            step: input_rate as f64 / SAMPLE_RATE as f64,
+            step: input_rate as f64 / output_rate.max(1) as f64,
             pos: 0.0,
             carry: None,
         }
@@ -193,6 +200,15 @@ mod tests {
             .collect();
         let out = Resampler::new(48_000).process(&input);
         assert!(rms(&out[1_000..]) < 0.05, "{}", rms(&out[1_000..]));
+    }
+
+    #[test]
+    fn resampler_goes_to_other_rates_too() {
+        let mut r = Resampler::to(44_100, 48_000);
+        let out = r.process(&vec![0.25; 44_100]);
+        assert!((out.len() as i64 - 48_000).abs() <= 1, "{}", out.len());
+        assert!(out[100..].iter().all(|s| (s - 0.25).abs() < 1e-3));
+        assert_eq!(Resampler::to(48_000, 48_000).process(&[0.1, 0.2]), vec![0.1, 0.2]);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 //! The global hotkey on Windows: a low-level keyboard hook (`WH_KEYBOARD_LL`)
 //! on a thread of its own, which runs the message loop the hook is called
 //! from. It needs no permission. It passes every key event on, except the
-//! plain keys of a combination while it is held (the D of Ctrl+Shift+D),
-//! so holding it to talk does not type into the app in front.
+//! plain keys of a combination while it is held (the D of Ctrl+Shift+D,
+//! the 2 of the screenshot's Ctrl+Shift+2), so holding it to talk does not
+//! type into the app in front.
 //!
 //! Windows silently removes a low-level hook that is ever too slow to
 //! answer, and nothing tells the app. So the thread runs at the highest
@@ -27,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_TIMER,
 };
 
-use super::super::{HotkeyWatch, KeyEvent};
+use super::super::{HotkeyWatch, KeyEvent, PressTracker};
 use crate::dictation::hotkey::{Mods, Outcome, Shortcut, Tracker, win};
 
 /// The hook needs no permission, so there is nothing to add.
@@ -45,6 +46,7 @@ struct Hook {
     watch: HotkeyWatch,
     on_event: Box<dyn Fn(KeyEvent) + Send>,
     tracker: Tracker,
+    presses: PressTracker,
     /// Keys whose press was kept from the app in front: their repeats and
     /// release are kept from it too.
     swallowed: Vec<u32>,
@@ -110,6 +112,7 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
             watch,
             on_event,
             tracker: Tracker::default(),
+            presses: PressTracker::default(),
             swallowed: Vec::new(),
             passed: Vec::new(),
         })
@@ -186,6 +189,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
     let target = hook.watch.key();
     let capturing = hook.watch.capturing();
+    for press in hook.presses.key(&win::CODES, &hook.watch, code, !up) {
+        (hook.on_event)(KeyEvent::Pressed(press));
+    }
     match hook.tracker.key(&win::CODES, &target, capturing, code, !up) {
         Some(Outcome::Down) => (hook.on_event)(KeyEvent::Down),
         Some(Outcome::Up) => (hook.on_event)(KeyEvent::Up),
@@ -212,12 +218,12 @@ fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
         return false;
     }
     // A fresh press: kept from the app when it is a plain key of the
-    // combination now held.
-    let swallow = !capturing
-        && swallows(&target)
+    // combination now held, dictation's or a press shortcut's.
+    let dictation_key = swallows(&target)
         && hook.tracker.active()
         && win::modifier(code).is_empty()
         && target.keys.iter().any(|k| win::vk(*k) == code);
+    let swallow = !capturing && (dictation_key || hook.presses.holds_plain_key(&win::CODES, &hook.watch, code));
     if swallow {
         hook.swallowed.push(code);
         // Alt or the Windows key pressed and let go of with nothing seen

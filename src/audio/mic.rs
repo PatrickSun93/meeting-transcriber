@@ -8,6 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use crossbeam_channel::{RecvTimeoutError, Sender};
 
+use super::dsp::SAMPLE_RATE;
 use super::silence::{Paced, TICK};
 use super::{AudioPacket, Capture, Converter};
 use crate::platform;
@@ -59,17 +60,18 @@ impl Drop for CaptureGuard {
 
 /// Starts capturing the default input device as `Speaker::Me`.
 pub fn start_mic(tx: Sender<AudioPacket>) -> Result<Capture> {
-    start(Input::Microphone, tx)
+    start(Input::Microphone, SAMPLE_RATE, tx)
 }
 
-pub(super) fn start(input: Input, tx: Sender<AudioPacket>) -> Result<Capture> {
+/// Starts capturing `input`, sent on as mono at `rate` frames per second.
+pub(super) fn start(input: Input, rate: u32, tx: Sender<AudioPacket>) -> Result<Capture> {
     // A cpal stream must stay on the thread that created it on macOS,
     // so it lives on its own thread until the guard is dropped.
     let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<String>>(1);
     let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
     let thread = std::thread::Builder::new()
         .name(input.noun().into())
-        .spawn(move || match open_stream(input, tx) {
+        .spawn(move || match open_stream(input, rate, tx) {
             Ok((stream, name, paced)) => {
                 let _ = ready_tx.send(Ok(name));
                 // Ticks until the guard drops the sender.
@@ -96,7 +98,7 @@ pub(super) fn start(input: Input, tx: Sender<AudioPacket>) -> Result<Capture> {
 
 type SharedFeed = Arc<Mutex<Paced>>;
 
-fn open_stream(input: Input, tx: Sender<AudioPacket>) -> Result<(cpal::Stream, String, SharedFeed)> {
+fn open_stream(input: Input, rate: u32, tx: Sender<AudioPacket>) -> Result<(cpal::Stream, String, SharedFeed)> {
     let host = cpal::default_host();
     let (device, config) = match input {
         Input::Microphone => {
@@ -123,7 +125,13 @@ fn open_stream(input: Input, tx: Sender<AudioPacket>) -> Result<(cpal::Stream, S
         .description()
         .map(|d| d.name().to_string())
         .unwrap_or_else(|_| input.noun().to_string());
-    let converter = Converter::new(input.speaker(), config.sample_rate(), config.channels() as usize, tx);
+    let converter = Converter::to_rate(
+        input.speaker(),
+        config.sample_rate(),
+        config.channels() as usize,
+        rate,
+        tx,
+    );
     let paced = match input {
         Input::Microphone => Paced::new(converter),
         // Loopback sends nothing while nothing plays.

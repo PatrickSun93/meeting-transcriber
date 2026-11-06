@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Align, Align2, FontId, Frame, Layout, Margin, RichText, Sense, Ui, Vec2};
 
+use super::capture::Trigger;
 use super::library::{DEFAULT_TITLE, Format};
 use super::{App, Page, language_name, platform, theme};
 use crate::meeting;
@@ -256,16 +257,39 @@ impl App {
         }
     }
 
-    /// Free-form notes, saved in the meeting file above the transcript.
+    /// Free-form notes, saved in the meeting file above the transcript,
+    /// with the pictures they link shown small above them.
     fn notes_editor(&mut self, ui: &mut Ui) {
         ui.set_width(ui.available_width());
-        theme::card_title(ui, "Notes");
         if self.open.read_only() {
+            theme::card_title(ui, "Notes");
             ui.weak("Old transcripts are read-only. Convert to Markdown to add notes.");
             if ui.button("Convert to Markdown").clicked() {
                 self.convert_to_markdown();
             }
             return;
+        }
+        ui.horizontal(|ui| {
+            theme::card_title(ui, "Notes");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let key = self.screenshot_key();
+                if ui
+                    .small_button("📷")
+                    .on_hover_text(format!("Take a screenshot into the notes{key}"))
+                    .clicked()
+                {
+                    self.start_screenshot(Trigger::Notes);
+                }
+            });
+        });
+        ui.add_space(4.0);
+        if let Some(dir) = self.open.path.as_deref().and_then(|p| p.parent())
+            && let Some(pin) = self
+                .capture
+                .thumbnails
+                .show(ui, dir, &self.open.meeting.notes, &self.capture.pending)
+        {
+            self.pin_file(pin);
         }
         let height = ui.available_height();
         let view_id = self.open.view_id;

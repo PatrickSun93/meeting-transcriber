@@ -1,6 +1,7 @@
-//! Dictation in the window: starting the hotkey watcher, handing the
-//! dictation threads the shared engine and the settings, the menu bar (or
-//! tray) item, closing to it, and the recordings list for the sidebar.
+//! Dictation in the window: starting the hotkey watcher (which also
+//! watches the capture hotkeys), handing the dictation threads the shared
+//! engine and the settings, the menu bar (or tray) item, closing to it, and
+//! the recordings list for the sidebar.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -9,9 +10,10 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 
 use super::App;
+use super::capture::Trigger;
 use crate::dictation::archive::{self, Clip};
 use crate::dictation::{self, Claim, Dictation, DictationConfig, Engine, Phase, Status, voice2cursor};
-use crate::platform::{self, HotkeyWatch, KeyEvent, TrayAction, TrayIcon, TrayMenu};
+use crate::platform::{self, HotkeyWatch, KeyEvent, Press, TrayAction, TrayIcon, TrayMenu};
 use crate::settings::DictationSettings;
 
 /// How often the recordings folder is listed again while it is shown.
@@ -21,6 +23,15 @@ const RESCAN_EVERY: Duration = Duration::from_secs(5);
 const QUIT_GRACE: Duration = Duration::from_secs(3);
 /// How often to look for a running voice2cursor.
 const VOICE2CURSOR_EVERY: Duration = Duration::from_secs(3);
+
+/// Which setting "Record keys…" fills in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum KeysFor {
+    #[default]
+    Dictation,
+    /// A capture hotkey: the screenshot's, the scrolling screenshot's, …
+    Capture(Press),
+}
 
 /// The recordings folder, listed in the background.
 #[derive(Default)]
@@ -43,6 +54,8 @@ pub(super) struct DictationState {
     pub hotkey: Option<HotkeyWatch>,
     /// Why the hotkey can't be watched, until dismissed.
     pub hotkey_error: Option<String>,
+    /// What the keys being recorded are for.
+    keys_for: KeysFor,
     key_events: (Sender<KeyEvent>, Receiver<KeyEvent>),
     /// voice2cursor was found running, so dictation was paused.
     pub voice2cursor_banner: bool,
@@ -88,7 +101,7 @@ impl DictationState {
         let dictation = Dictation::start(config.clone(), wake);
         // Both would paste every dictation. voice2cursor is looked for by
         // the watcher, which pauses dictation when it finds it.
-        let lock = crate::models::app_support_dir().join("dictation.lock");
+        let lock = lock_path();
         let mut claim = dictation::claim(&lock);
         // Restarted by the copy before (to use CUDA): it is quitting, and
         // lets go of the lock in a moment.
@@ -109,6 +122,7 @@ impl DictationState {
             pushed_paused: other_copy,
             hotkey: None,
             hotkey_error: None,
+            keys_for: KeysFor::default(),
             key_events: crossbeam_channel::unbounded(),
             voice2cursor_banner: false,
             voice2cursor_running: false,
@@ -160,6 +174,11 @@ pub(super) fn describe(status: &Status, hotkey: &str) -> String {
     }
 }
 
+/// Dictation's single-copy lock.
+fn lock_path() -> std::path::PathBuf {
+    crate::models::app_support_dir().join("dictation.lock")
+}
+
 fn tray_icon(phase: Phase) -> TrayIcon {
     match phase {
         Phase::Loading => TrayIcon::Loading,
@@ -192,6 +211,9 @@ impl App {
         });
         match result {
             Ok(watch) => {
+                for (press, key) in self.capture.settings.presses() {
+                    watch.set_press(press, Some(key));
+                }
                 let probe = watch.clone();
                 self.dict
                     .dictation
@@ -212,16 +234,24 @@ impl App {
             self.dict.resume_wanted = false;
             return;
         }
-        if matches!(self.dict.claim, Claim::Taken) {
-            self.dict.claim = dictation::claim(&crate::models::app_support_dir().join("dictation.lock"));
-            if matches!(self.dict.claim, Claim::Taken) {
-                self.dict.other_copy_banner = true;
-                return;
-            }
-            self.dict.other_copy_banner = false;
+        if !self.holds_claim() {
+            self.dict.other_copy_banner = true;
+            return;
         }
+        self.dict.other_copy_banner = false;
         self.dict.resume_wanted = true;
         let _ = self.dict.voice2cursor_ask.try_send(());
+    }
+
+    /// Whether this copy of the app holds dictation's lock, looking again
+    /// while another holds it (it may have quit since). Only that copy
+    /// dictates and answers the capture hotkeys, so two copies never
+    /// both do.
+    fn holds_claim(&mut self) -> bool {
+        if matches!(self.dict.claim, Claim::Taken) {
+            self.dict.claim = dictation::claim(&lock_path());
+        }
+        !matches!(self.dict.claim, Claim::Taken)
     }
 
     /// Pauses dictation when voice2cursor starts, and finishes a resume.
@@ -259,6 +289,7 @@ impl App {
         if let Some(at) = self.dict.quit_at {
             if at.elapsed() > QUIT_GRACE {
                 // The window did not close (it may be hidden): save and go.
+                self.finish_captures();
                 self.stop_session();
                 self.finish_pending();
                 std::process::exit(0);
@@ -293,7 +324,15 @@ impl App {
         let events: Vec<KeyEvent> = self.dict.key_events.1.try_iter().collect();
         for event in events {
             match event {
-                KeyEvent::Captured(key) => self.dict.settings.hotkey = key.name(),
+                KeyEvent::Captured(key) => match self.dict.keys_for {
+                    KeysFor::Dictation => self.dict.settings.hotkey = key.name(),
+                    KeysFor::Capture(press) => *self.capture.settings.press_value_mut(press) = key.name(),
+                },
+                KeyEvent::Pressed(press) => {
+                    if self.holds_claim() {
+                        self.start_screenshot(Trigger::Hotkey(press));
+                    }
+                }
                 KeyEvent::Stopped => {
                     self.dict.hotkey = None;
                     self.dict.hotkey_error = Some(
@@ -307,9 +346,17 @@ impl App {
         }
     }
 
-    /// Whether the next key press is being captured as the hotkey.
-    pub(super) fn capturing_hotkey(&self) -> bool {
-        self.dict.hotkey.as_ref().is_some_and(HotkeyWatch::capturing)
+    /// Whether the next keys pressed are being recorded as the hotkey `of`.
+    pub(super) fn capturing_keys(&self, of: KeysFor) -> bool {
+        self.dict.keys_for == of && self.dict.hotkey.as_ref().is_some_and(HotkeyWatch::capturing)
+    }
+
+    /// Records the next keys pressed as the hotkey `of`.
+    pub(super) fn record_keys(&mut self, of: KeysFor) {
+        if let Some(watch) = &self.dict.hotkey {
+            self.dict.keys_for = of;
+            watch.capture_next(true);
+        }
     }
 
     fn poll_tray_actions(&mut self, ctx: &egui::Context) {
@@ -321,6 +368,7 @@ impl App {
                         self.errors.push(format!("{e:#}"));
                     }
                 }
+                TrayAction::Screenshot => self.start_screenshot(Trigger::Menu),
                 TrayAction::TogglePause => self.set_dictation_paused(!self.dict.paused),
                 TrayAction::OpenWindow => self.show_window(ctx),
                 TrayAction::Quit => {
@@ -403,10 +451,19 @@ impl App {
             self.dict.pushed_paused = self.dict.paused;
         }
         let key = self.dict.settings.hotkey();
-        if let Some(watch) = &self.dict.hotkey
-            && watch.key() != key
-        {
-            watch.set_key(key);
+        if let Some(watch) = &self.dict.hotkey {
+            if watch.key() != key {
+                watch.set_key(key);
+            }
+            // Hotkeys switched off (or the same as an earlier one) are
+            // not watched.
+            let wanted = self.capture.settings.presses();
+            for press in Press::ALL {
+                let key = wanted.iter().find(|(p, _)| *p == press).map(|(_, key)| key.clone());
+                if watch.press(press) != key {
+                    watch.set_press(press, key);
+                }
+            }
         }
     }
 
@@ -437,7 +494,14 @@ impl App {
     fn update_tray(&mut self) {
         let Some(tray) = &self.dict.tray else { return };
         let status = self.dict.status();
-        let (phase, text) = self.dictation_state(&status);
+        let (mut phase, mut text) = self.dictation_state(&status);
+        let recording_screen = self.recording_screen();
+        let countdown = self.countdown_left();
+        if recording_screen {
+            (phase, text) = (Phase::Recording, "Recording the screen".into());
+        } else if let Some(left) = countdown {
+            text = format!("Screenshot in {left}…");
+        }
         let menu = TrayMenu {
             status: text.clone(),
             recent: status
@@ -446,6 +510,8 @@ impl App {
                 .map(|(at, text)| (at.format("%H:%M").to_string(), text.clone()))
                 .collect(),
             paused: self.dict.paused,
+            recording_screen,
+            counting_down: countdown.is_some(),
         };
         tray.set(tray_icon(phase), &format!("Meeting Transcriber · {text}"), menu);
     }

@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod capture;
 pub mod chunker;
 pub mod cli;
 pub mod cuda_addon;

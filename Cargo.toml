@@ -9,13 +9,23 @@ publish = false
 [dependencies]
 anyhow = "1"
 # Already built for egui's clipboard; dictation copies from its own threads.
-arboard = { version = "3", default-features = false }
+# image-data: screenshots go on the clipboard as pictures.
+arboard = { version = "3", default-features = false, features = ["image-data"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cpal = "0.18"
 crossbeam-channel = "0.5"
 dirs = "7"
 eframe = "0.37"
 hound = "3"
+# Text drawn on screenshots (src/capture/raster.rs), in egui's own fonts.
+# Pure Rust, and the font reader egui's fonts used before.
+ab_glyph = "0.2"
+# Screenshots are saved as PNG, and the notes show them (src/capture/image.rs).
+# Pure Rust, and already built for egui's fonts and arboard.
+png = "0.18"
+# Lines, outlines and arrows drawn on screenshots (src/capture/raster.rs).
+# Pure Rust; without png-format, which would build a second png.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
 # win-system-proxy: on Windows, use the proxy set in the system's internet
 # settings (as a VPN or proxy app sets it), the one browsers use.
 ureq = { version = "3", features = ["win-system-proxy"] }
@@ -49,13 +59,21 @@ vulkan = ["whisper-rs/vulkan"]
 cuda = ["whisper-rs/cuda"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit = "11"
+# System audio, and screenshots: macos_14_0 builds the screenshot API (it
+# needs the macOS 14 SDK to build); the app still runs on macOS 13, where
+# it is checked for before use. macos_15_0: screen recording straight into
+# an MP4 file (SCRecordingOutput, and the microphone), checked for the same
+# way; it needs the macOS 15 SDK to build.
+screencapturekit = { version = "11", features = ["macos_15_0"] }
 whisper-rs = { version = "0.16", features = ["metal"] }
 # Dictation: the hotkey event tap and ⌘V (Quartz), the menu bar item and the
-# sounds (AppKit).
+# sounds (AppKit). Screenshots: the displays and their windows (Quartz), the
+# overlay above the menu bar and handing the focus back (AppKit); scrolling
+# screenshots turn the wheel (highsierra: Quartz's scroll events, macOS
+# 10.13 and later).
 # All already built for winit and eframe.
 core-foundation = "0.9"
-core-graphics = "0.23"
+core-graphics = { version = "0.23", features = ["highsierra"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
@@ -74,22 +92,34 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSStatusBarButton",
     "NSStatusItem",
     "NSView",
+    "NSWindow",
+    "NSWorkspace",
     "objc2-core-foundation",
 ] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSProcessInfo",
+    "NSString",
+] }
 
 # The Explorer folder dialog (COM); for dictation, the keyboard hook and
-# Ctrl+V, the tray icon, sounds and the startup entry. Already built for
-# cpal's WASAPI backend.
+# Ctrl+V, the tray icon, sounds and the startup entry; for screenshots, the
+# monitor (GDI, its DPI) and the windows on it (DWM); for screen recording,
+# Media Foundation's H.264 and AAC encoders and its MP4 writer, part of
+# Windows. Already built for cpal's WASAPI backend.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
@@ -98,9 +128,9 @@ windows = { version = "0.62", features = [
 
 # Dictation on Linux: the hotkey and Ctrl+V on X11 (XInput 2, XTest), and
 # over D-Bus the Wayland shortcuts portal and the tray icon. Both already
-# built for arboard and AccessKit.
+# built for arboard and AccessKit. Screenshots on X11: the monitors (RandR).
 [target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
-x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+x11rb = { version = "0.13", features = ["randr", "xinput", "xtest"] }
 zbus = "5"
 
 [profile.release]

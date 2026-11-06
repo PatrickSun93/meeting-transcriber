@@ -25,9 +25,10 @@ meeting-transcriber keys --once --json # ask the user to hold a key or combinati
   panics. On Windows this is the only place they go. Ask the user to
   reproduce the problem, then read it.
 - `keys` shows each key or combination as the hotkey watcher sees it, with
-  its setting name and whether it is the dictation hotkey. It needs the
-  user to press keys. It does not work on Wayland, where apps can't see
-  the keyboard.
+  its setting name and which hotkey settings it is (`dictation_hotkey`,
+  `capture_hotkey`, `scroll_hotkey`, `record_hotkey`, `pin_hotkey`). It
+  needs the user to press keys. It does not work on Wayland, where apps
+  can't see the keyboard.
 - `settings set KEY VALUE` checks the value before saving. A running app
   keeps its own copy: tell the user to quit and reopen it afterwards.
 
@@ -59,6 +60,25 @@ Transcripts go to `Documents/Meeting Transcripts` unless changed in Settings
   (no CUDA toolkit is needed; the driver is enough), used after a restart.
 - **Hotkey does nothing**: compare `doctor`'s `hotkey` with what `keys`
   prints when the user presses it.
+- **Screenshots**: `doctor` shows the capture hotkeys (`screenshot_hotkey`,
+  setting `capture_hotkey`; `scroll_hotkey`, `record_hotkey`, `pin_hotkey`,
+  each `off` until chosen), flags two that are the same or one that is the
+  dictation hotkey, and shows where pictures go (`screenshots`: the
+  `screenshots_dir` setting, and whether `capture_into_meeting` is on),
+  what Enter does (`screenshot_action`) and the countdown
+  (`capture_delay`); `keys` marks each hotkey. On the Mac they need `screen_recording` allowed for the app; on
+  Linux only X11 works. A failed screenshot shows its reason in the window.
+  A scrolling screenshot (Scroll on the overlay) that does not scroll by
+  itself on the Mac lacks `accessibility`; its window then says to scroll
+  by hand.
+- **Screen recordings** (Record on the overlay): `doctor`'s
+  `screen_recordings` says where they go (`recordings_dir`), what they hear
+  (settings `record_computer_sound`, `record_microphone`), the pointer
+  (`record_cursor`), frames a second (`record_fps`) and quality
+  (`record_quality`, Windows only), or why they can't be made
+  (Linux; a Mac before macOS 15). A failed one shows its reason in the
+  window; on Windows a sound source that would not start is in `log`
+  (`screen recording: without …`), and the video is made without it.
 
 ## Developing
 

@@ -1,5 +1,5 @@
 //! The settings page: models, storage folders, recognition options,
-//! dictation (in `dictation_page.rs`), about.
+//! dictation (in `dictation_page.rs`), screenshots (in `capture.rs`), about.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -23,6 +23,7 @@ impl App {
                     Self::storage_card,
                     Self::recognition_card,
                     Self::dictation_card,
+                    Self::screenshot_card,
                     Self::about_card,
                 ] {
                     theme::card(ui).show(ui, |ui| {
@@ -269,6 +270,24 @@ impl App {
                 "Recordings folder",
                 "Dictations are saved here as WAV files, each with its text, and listed in the sidebar.",
                 &self.dict.settings.recordings_dir,
+            ),
+            Folder::Screenshots => (
+                "Screenshots folder",
+                if self.capture.settings.into_meeting {
+                    "Screenshots taken with no meeting open are saved here."
+                } else {
+                    "Screenshots are saved here."
+                },
+                &self.capture.settings.screenshots_dir,
+            ),
+            Folder::ScreenRecordings => (
+                "Screen recordings folder",
+                if self.capture.settings.into_meeting {
+                    "Screen recordings made with no meeting open are saved here."
+                } else {
+                    "Screen recordings are saved here."
+                },
+                &self.capture.settings.recordings_dir,
             ),
         };
         let is_default = setting.is_empty();

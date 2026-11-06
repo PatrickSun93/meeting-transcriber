@@ -4,6 +4,7 @@
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui};
 
+use super::dictation::KeysFor;
 use super::sidebar::list_row;
 use super::{App, Folder, LANGUAGES, Page, language_name, platform, theme};
 use crate::dictation::archive::Clip;
@@ -426,7 +427,7 @@ impl App {
             if choice != current {
                 self.dict.settings.hotkey = choice.name();
             }
-            let capturing = self.capturing_hotkey();
+            let capturing = self.capturing_keys(KeysFor::Dictation);
             if capturing {
                 ui.spinner();
                 ui.label("Hold the key or keys to use, then let go… (Esc cancels)");
@@ -441,9 +442,8 @@ impl App {
                 .on_hover_text("Hold any key or combination, e.g. Ctrl+Shift+D or F13, then let go.")
                 .on_disabled_hover_text("The hotkey can't be watched; see the message at the top.")
                 .clicked()
-                && let Some(watch) = &self.dict.hotkey
             {
-                watch.capture_next(true);
+                self.record_keys(KeysFor::Dictation);
             }
         });
         if current.keys.iter().any(|k| matches!(k, Hotkey::Vk(_))) {

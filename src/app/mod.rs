@@ -1,16 +1,24 @@
 //! The native window (egui): app state, background work, and the frame loop.
 //! Pages live in their own modules.
 
+mod capture;
+mod capture_settings;
 mod dictation;
 mod dictation_page;
+mod drawing;
 mod importing;
 mod library;
 mod meeting_page;
+mod overlay;
 mod path_prompt;
+mod pins;
 mod reader;
+mod recording;
+mod scrolling;
 mod settings_page;
 mod sidebar;
 mod theme;
+mod thumbnails;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +28,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use eframe::egui::{self, RichText};
 
+use crate::capture::files::Kind;
 use crate::chunker::ChunkerConfig;
 use crate::models::{self, DEFAULT_MODEL, ModelInfo};
 use crate::platform;
@@ -27,6 +36,7 @@ use crate::session::{Session, SessionConfig};
 use crate::settings::{self, Settings};
 use crate::transcriber::{Job, Output, Progress, SpeechToText, WhisperEngine, spawn_worker};
 use crate::transcript::Transcript;
+use capture::CaptureState;
 use dictation::DictationState;
 use library::{ExportPick, MeetingList, Notice, OpenMeeting};
 use path_prompt::{PathPrompt, PromptFor};
@@ -86,7 +96,11 @@ enum SidebarTab {
 enum Folder {
     Models,
     Meetings,
+    /// Dictation's.
     Recordings,
+    /// Screenshots and screen recordings not into a meeting.
+    Screenshots,
+    ScreenRecordings,
 }
 
 struct Engine {
@@ -201,6 +215,7 @@ pub struct App {
     /// A recording being transcribed (Import).
     import: Option<importing::Import>,
     import_pick: Option<importing::ImportPick>,
+    capture: CaptureState,
 }
 
 /// Marks that the user does not want to be asked to install.
@@ -232,6 +247,7 @@ impl App {
         let mut transcript = Transcript::default();
         transcript.echo.enabled = settings.remove_echo;
         let dict = DictationState::new(settings.dictation.clone(), &cc.egui_ctx, start_hidden);
+        let capture = CaptureState::new(settings.capture.clone());
         let mut app = Self {
             ctx: cc.egui_ctx.clone(),
             page: Page::Meeting,
@@ -274,6 +290,7 @@ impl App {
             cuda_addon: CudaAddon::default(),
             import: None,
             import_pick: None,
+            capture,
         };
         if let Some(from) = move_from {
             app.spawn_model_move(from);
@@ -419,6 +436,14 @@ impl App {
             Folder::Models => models::configured_dir(),
             Folder::Meetings => self.meetings_dir_path(),
             Folder::Recordings => self.dict.settings.recordings_dir_path(),
+            Folder::Screenshots => self
+                .capture
+                .settings
+                .loose_dir(Kind::Screenshot, &self.meetings_dir_path()),
+            Folder::ScreenRecordings => self
+                .capture
+                .settings
+                .loose_dir(Kind::Recording, &self.meetings_dir_path()),
         }
     }
 
@@ -431,6 +456,8 @@ impl App {
             Folder::Models => "Choose a folder for Whisper models",
             Folder::Meetings => "Choose a folder for meeting transcripts",
             Folder::Recordings => "Choose a folder for dictation recordings",
+            Folder::Screenshots => "Choose a folder for screenshots",
+            Folder::ScreenRecordings => "Choose a folder for screen recordings",
         }
     }
 
@@ -447,6 +474,8 @@ impl App {
         match folder {
             Folder::Meetings => self.meetings_dir = setting,
             Folder::Recordings => self.dict.settings.recordings_dir = setting,
+            Folder::Screenshots => self.capture.settings.screenshots_dir = setting,
+            Folder::ScreenRecordings => self.capture.settings.recordings_dir = setting,
             // A running download writes into the current folder, so it would
             // end up left behind. The buttons are disabled meanwhile, but the
             // folder dialog may have been opened before the download started.
@@ -772,6 +801,7 @@ impl App {
             meetings_dir: self.meetings_dir.clone(),
             models_move_from: self.models_move_from.clone(),
             dictation: self.dict.settings.clone(),
+            capture: self.capture.settings.clone(),
         }
     }
 
@@ -896,6 +926,7 @@ impl eframe::App for App {
         self.refresh_library();
         self.autosave();
         self.dictation_logic(ctx);
+        self.capture_logic(ctx);
         self.save_settings_if_changed();
         if self.recording() && self.dict.window_hidden {
             ctx.request_repaint_after(Duration::from_millis(500));
@@ -915,6 +946,7 @@ impl eframe::App for App {
                 self.error_banner(ui);
                 self.install_banner(ui);
                 self.dictation_banners(ui);
+                self.recording_banner(ui);
                 match self.page {
                     Page::Meeting => self.meeting_page(ui),
                     Page::Dictation => self.dictation_page(ui),
@@ -923,6 +955,7 @@ impl eframe::App for App {
             });
 
         self.path_prompt_dialog(ui.ctx());
+        self.capture_overlay(ui.ctx());
 
         if self.recording() {
             // Keep the meters and clock moving.
@@ -931,6 +964,7 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        self.finish_captures();
         self.stop_session();
         self.finish_pending();
     }

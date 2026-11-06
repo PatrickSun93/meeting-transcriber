@@ -13,7 +13,7 @@ use eframe::egui::{self, RichText, Ui};
 
 use super::{App, platform, theme};
 use crate::import::{self, Stage};
-use crate::media;
+use crate::media::{self, Tracks};
 use crate::transcriber::{DictationJob, Job, Output};
 
 /// An import on its thread.
@@ -68,6 +68,7 @@ impl App {
         let jobs = engine.jobs.clone();
         let language = self.language.map(str::to_string);
         let meetings_dir = self.meetings_dir_path();
+        let tracks = Tracks::for_file(&file, &meetings_dir);
         let stage = Arc::new(Mutex::new(Stage::Reading { seconds: 0.0 }));
         let cancel = Arc::new(AtomicBool::new(false));
         let (done_tx, done) = crossbeam_channel::bounded(1);
@@ -76,10 +77,18 @@ impl App {
         std::thread::Builder::new()
             .name("import".into())
             .spawn(move || {
-                let result = run(&thread_file, jobs, language, &meetings_dir, thread_cancel, |s| {
-                    *thread_stage.lock().unwrap_or_else(|e| e.into_inner()) = s;
-                    ctx.request_repaint();
-                });
+                let result = run(
+                    &thread_file,
+                    tracks,
+                    jobs,
+                    language,
+                    &meetings_dir,
+                    thread_cancel,
+                    |s| {
+                        *thread_stage.lock().unwrap_or_else(|e| e.into_inner()) = s;
+                        ctx.request_repaint();
+                    },
+                );
                 let _ = done_tx.send(result);
                 ctx.request_repaint();
             })
@@ -202,13 +211,14 @@ fn file_name(path: &Path) -> String {
 /// The import thread: the recording becomes a meeting file.
 fn run(
     file: &Path,
+    tracks: Tracks,
     jobs: Sender<Job>,
     language: Option<String>,
     meetings_dir: &Path,
     cancel: Arc<AtomicBool>,
     stage: impl FnMut(Stage),
 ) -> anyhow::Result<PathBuf> {
-    let (lines, duration) = import::transcribe_file(file, true, cancel, stage, |samples| {
+    let (lines, duration) = import::transcribe_file(file, tracks, true, cancel, stage, |samples| {
         let (reply, answer) = crossbeam_channel::bounded(1);
         jobs.send(Job::Background(DictationJob {
             samples: samples.to_vec(),

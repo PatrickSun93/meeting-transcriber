@@ -2165,6 +2165,7 @@ dependencies = [
 name = "meeting-transcriber"
 version = "0.2.2"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "arboard",
  "chrono",
@@ -2178,9 +2179,11 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "png",
  "screencapturekit",
  "speakrs",
  "symphonia",
+ "tiny-skia",
  "ureq",
  "whisper-rs",
  "windows",

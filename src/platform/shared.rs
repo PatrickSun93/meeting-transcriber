@@ -19,6 +19,7 @@ const RECENT: u32 = 100;
 pub const ID_PAUSE: u32 = 1000;
 pub const ID_OPEN: u32 = 1001;
 pub const ID_QUIT: u32 = 1002;
+pub const ID_SCREENSHOT: u32 = 1003;
 
 /// One line of the tray menu. Ids start at 1: Windows reports 0 for "no
 /// choice", and the D-Bus menu's root is 0.
@@ -40,7 +41,8 @@ pub enum ItemKind {
 }
 
 /// The tray menu as the Mac's menu bar item shows it: the state, the latest
-/// dictations (click to copy), Pause, Open and Quit.
+/// dictations (click to copy), Take a screenshot (or Stop the screen
+/// recording), Pause, Open and Quit.
 pub fn menu_items(menu: &TrayMenu) -> Vec<MenuItem> {
     let item = |id, label: &str, kind| MenuItem {
         id,
@@ -62,6 +64,7 @@ pub fn menu_items(menu: &TrayMenu) -> Vec<MenuItem> {
         }
     }
     items.push(separator(1));
+    items.push(item(ID_SCREENSHOT, menu.screenshot_label(), ItemKind::Action));
     items.push(item(ID_PAUSE, "Pause dictation", ItemKind::Check(menu.paused)));
     items.push(item(ID_OPEN, "Open Meeting Transcriber", ItemKind::Action));
     items.push(separator(2));
@@ -72,6 +75,7 @@ pub fn menu_items(menu: &TrayMenu) -> Vec<MenuItem> {
 /// What choosing the item `id` of `menu` asks for.
 pub fn menu_action(id: u32, menu: &TrayMenu) -> Option<TrayAction> {
     match id {
+        ID_SCREENSHOT => Some(TrayAction::Screenshot),
         ID_PAUSE => Some(TrayAction::TogglePause),
         ID_OPEN => Some(TrayAction::OpenWindow),
         ID_QUIT => Some(TrayAction::Quit),
@@ -409,6 +413,8 @@ mod tests {
             status: "Ready: hold Right Ctrl to dictate".into(),
             recent: (0..recent).map(|i| (format!("09:0{i}"), format!("text {i}"))).collect(),
             paused,
+            recording_screen: false,
+            counting_down: false,
         }
     }
 
@@ -426,6 +432,7 @@ mod tests {
                 "09:00  text 0",
                 "09:01  text 1",
                 "",
+                "Take a screenshot",
                 "Pause dictation",
                 "Open Meeting Transcriber",
                 "",
@@ -433,7 +440,7 @@ mod tests {
             ]
         );
         assert_eq!(items[0].kind, ItemKind::Text);
-        assert_eq!(items[6].kind, ItemKind::Check(true));
+        assert_eq!(items[7].kind, ItemKind::Check(true));
         // Every id is its own and none is 0.
         let mut ids: Vec<u32> = items.iter().map(|i| i.id).collect();
         ids.sort_unstable();
@@ -441,13 +448,28 @@ mod tests {
         assert_eq!(ids.len(), items.len());
         assert!(!ids.contains(&0));
         assert_eq!(menu_action(items[4].id, &m), Some(TrayAction::Copy("text 1".into())));
+        assert_eq!(menu_action(ID_SCREENSHOT, &m), Some(TrayAction::Screenshot));
         assert_eq!(menu_action(ID_PAUSE, &m), Some(TrayAction::TogglePause));
         assert_eq!(menu_action(ID_OPEN, &m), Some(TrayAction::OpenWindow));
         assert_eq!(menu_action(ID_QUIT, &m), Some(TrayAction::Quit));
         assert_eq!(menu_action(ID_STATUS, &m), None);
         assert_eq!(menu_action(RECENT + 5, &m), None);
         assert_eq!(menu_items(&menu(0, false))[2].label, "No dictations yet");
-        assert_eq!(menu_items(&menu(0, false))[4].kind, ItemKind::Check(false));
+        assert_eq!(menu_items(&menu(0, false))[5].kind, ItemKind::Check(false));
+        // While the screen is recorded, the same item stops it.
+        let recording = TrayMenu {
+            recording_screen: true,
+            ..menu(0, false)
+        };
+        assert_eq!(menu_items(&recording)[4].label, "Stop screen recording");
+        assert_eq!(menu_action(ID_SCREENSHOT, &recording), Some(TrayAction::Screenshot));
+        // During a countdown, it cancels the screenshot.
+        let counting = TrayMenu {
+            counting_down: true,
+            ..menu(0, false)
+        };
+        assert_eq!(menu_items(&counting)[4].label, "Cancel the screenshot");
+        assert_eq!(menu_action(ID_SCREENSHOT, &counting), Some(TrayAction::Screenshot));
     }
 
     #[test]

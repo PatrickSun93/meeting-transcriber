@@ -22,7 +22,7 @@ use x11rb::rust_connection::RustConnection;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use super::super::shared::{KeySource, key_sources, portal_request_path, portal_trigger};
-use super::super::{HotkeyWatch, KeyEvent};
+use super::super::{HotkeyWatch, KeyEvent, PressTracker};
 use super::{socket, system};
 use crate::dictation::hotkey::{Outcome, Shortcut, Tracker, x11};
 
@@ -163,6 +163,7 @@ fn lost_hotkey(watch: &HotkeyWatch, events: &Events, listening: bool) {
 
 fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
     let mut tracker = Tracker::default();
+    let mut presses = PressTracker::default();
     loop {
         let (code, down) = match conn.wait_for_event() {
             Ok(Event::XinputRawKeyPress(e)) => (e.detail, true),
@@ -173,7 +174,10 @@ fn x11_loop(conn: &RustConnection, watch: &HotkeyWatch, events: &Events) {
                 return;
             }
         };
-        // Repeats are told apart by the tracker: the key is already down.
+        // Repeats are told apart by the trackers: the key is already down.
+        for press in presses.key(&x11::CODES, watch, code, down) {
+            events.send(KeyEvent::Pressed(press));
+        }
         let capturing = watch.capturing();
         match tracker.key(&x11::CODES, &watch.key(), capturing, code, down) {
             Some(Outcome::Down) => events.send(KeyEvent::Down),

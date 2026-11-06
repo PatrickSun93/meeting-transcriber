@@ -348,7 +348,7 @@ fn baseline_tweak(data: &egui::FontData) -> egui::epaint::text::FontTweak {
 }
 
 #[cfg(target_os = "macos")]
-fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+pub(super) fn fallback_font_paths() -> Vec<std::path::PathBuf> {
     [
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -365,7 +365,7 @@ fn fallback_font_paths() -> Vec<std::path::PathBuf> {
 /// Microsoft YaHei, Yu Gothic and Malgun Gothic ship with Windows 10+, in
 /// the Windows folder, which need not be on C:.
 #[cfg(windows)]
-fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+pub(super) fn fallback_font_paths() -> Vec<std::path::PathBuf> {
     let windows = std::env::var_os("SystemRoot")
         .or_else(|| std::env::var_os("WINDIR"))
         .map_or_else(|| r"C:\Windows".into(), std::path::PathBuf::from);
@@ -379,7 +379,7 @@ fn fallback_font_paths() -> Vec<std::path::PathBuf> {
 /// the usual places are tried first, then whatever fontconfig knows for
 /// Chinese. One is enough, and each is large.
 #[cfg(not(any(target_os = "macos", windows)))]
-fn fallback_font_paths() -> Vec<std::path::PathBuf> {
+pub(super) fn fallback_font_paths() -> Vec<std::path::PathBuf> {
     let mut paths: Vec<std::path::PathBuf> = [
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",

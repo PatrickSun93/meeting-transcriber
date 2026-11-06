@@ -61,6 +61,7 @@ pub fn diagnostics() -> Vec<(&'static str, String)> {
         vec![
             ("input_monitoring", yes_no(CGPreflightListenEventAccess())),
             ("accessibility", yes_no(CGPreflightPostEventAccess())),
+            ("screen_recording", yes_no(crate::capture::screen_recording_allowed())),
         ]
     }
 }
