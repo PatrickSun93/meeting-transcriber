@@ -21,4 +21,5 @@ pub mod session;
 pub mod settings;
 pub mod transcriber;
 pub mod transcript;
+pub mod vad;
 pub mod wav;

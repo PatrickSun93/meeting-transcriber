@@ -401,6 +401,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/chunker.rs` | Splits speech at pauses; sends live partials |
 | `src/session.rs` | Connects the sources, chunkers and transcriber; silences Me while dictating |
 | `src/transcriber.rs` | Whisper engine and job queue (dictation first, then finals; stale partials dropped) |
+| `src/vad.rs` | Speech detection (Silero VAD through whisper.cpp): pieces of a meeting with too little speech are not transcribed |
 | `src/dictation/` | Hold-to-talk dictation: recorder and finisher threads, hotkey names, the recordings archive, the language-model clean-up |
 | `src/transcript.rs` | Transcript, live previews, echo filter, hallucination filter |
 | `src/app/mod.rs` | The window (egui): app state and background work |
@@ -439,3 +440,5 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 MIT
 
 The speaker models the app downloads for imports are pyannote's [segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) and WeSpeaker's ResNet34 as converted by [speakrs](https://huggingface.co/avencera/speakrs-models), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+The speech detection model built into the program (`assets/ggml-silero-v5.1.2.bin`) is [Silero VAD](https://github.com/snakers4/silero-vad) in whisper.cpp's format, from [ggml-org/whisper-vad](https://huggingface.co/ggml-org/whisper-vad), under the MIT licence.

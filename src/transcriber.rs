@@ -39,6 +39,13 @@ pub trait SpeechToText: Send {
         let _ = prompt;
         self.transcribe(samples, language)
     }
+
+    /// Seconds of `samples` that sound like speech, or None when the engine
+    /// can't tell (then everything is transcribed).
+    fn speech_seconds(&mut self, samples: &[f32]) -> Option<f32> {
+        let _ = samples;
+        None
+    }
 }
 
 /// The GPU backend whisper.cpp was built with, if any: Metal on macOS,
@@ -57,6 +64,8 @@ pub const GPU: Option<&str> = if cfg!(target_os = "macos") {
 pub struct WhisperEngine {
     state: whisper_rs::WhisperState,
     threads: i32,
+    /// Tells speech from noise; None if its model would not load.
+    vad: Option<crate::vad::Vad>,
 }
 
 /// Segments Whisper itself rates as probably silent are dropped.
@@ -73,7 +82,10 @@ impl WhisperEngine {
         let state = ctx.create_state().context("could not create Whisper state")?;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32;
         crate::gpu::mark_ready();
-        Ok(Self { state, threads })
+        let vad = crate::vad::Vad::load()
+            .inspect_err(|e| eprintln!("transcriber: without speech detection: {e:#}"))
+            .ok();
+        Ok(Self { state, threads, vad })
     }
 }
 
@@ -129,6 +141,13 @@ impl SpeechToText for WhisperEngine {
         }
         let language = whisper_rs::get_lang_str(self.state.full_lang_id_from_state()).map(str::to_string);
         Ok(Recognized { text, language })
+    }
+
+    fn speech_seconds(&mut self, samples: &[f32]) -> Option<f32> {
+        let vad = self.vad.as_mut()?;
+        vad.speech_seconds(samples)
+            .inspect_err(|e| eprintln!("transcriber: {e:#}"))
+            .ok()
     }
 }
 
@@ -352,6 +371,25 @@ pub fn run_job(engine: &mut dyn SpeechToText, job: ChunkJob, outputs: &Sender<Ou
         language,
     } = job;
     let started = Instant::now();
+    // Noise, not speech: Whisper would make words up for it.
+    if engine
+        .speech_seconds(&chunk.samples)
+        .is_some_and(|s| s < crate::vad::MIN_SPEECH_SECONDS)
+    {
+        return match chunk.kind {
+            ChunkKind::Partial => Output::Preview {
+                speaker,
+                utterance: chunk.utterance,
+                start: chunk.start,
+                text: None,
+            },
+            ChunkKind::Final => Output::Final {
+                speaker,
+                utterance: chunk.utterance,
+                line: None,
+            },
+        };
+    }
     let result = engine.transcribe(&chunk.samples, language.as_deref());
     match (chunk.kind, result) {
         (_, Err(e)) => Output::Error(format!("{e:#}")),
@@ -506,6 +544,43 @@ mod tests {
             r.text += prompt.unwrap_or_default();
             Ok(r)
         }
+    }
+
+    /// Hears no speech in anything.
+    struct Deaf;
+    impl SpeechToText for Deaf {
+        fn transcribe(&mut self, _: &[f32], _: Option<&str>) -> Result<Recognized> {
+            panic!("noise must not reach Whisper")
+        }
+
+        fn speech_seconds(&mut self, _: &[f32]) -> Option<f32> {
+            Some(0.1)
+        }
+    }
+
+    #[test]
+    fn noise_is_not_transcribed() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        for kind in [ChunkKind::Partial, ChunkKind::Final] {
+            let Job::Chunk(chunk) = job(Speaker::Me, 3, kind, 2.0) else {
+                unreachable!()
+            };
+            match run_job(&mut Deaf, chunk, &tx) {
+                Output::Preview {
+                    text: None,
+                    utterance: 3,
+                    ..
+                }
+                | Output::Final {
+                    line: None,
+                    utterance: 3,
+                    ..
+                } => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        // No speed: Whisper did not run.
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
