@@ -91,6 +91,11 @@ jobs:
     # starts when the graphics driver has Vulkan; Others is recorded with parec.
     runs-on: ubuntu-latest
     env:
+      # whisper.cpp for any x86-64 PC with AVX2, not for the runner's own
+      # processor (its default): a build for a runner with AVX-512 crashes
+      # elsewhere (STATUS_ILLEGAL_INSTRUCTION). Its build script does not
+      # watch GGML_* settings, hence the rust-cache key.
+      GGML_NATIVE: 'OFF'
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
     steps:
@@ -100,6 +105,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2
       # ALSA headers for the microphone; CMake and Clang build whisper.cpp
       # and its bindings. The window needs no headers: winit loads X11,
       # Wayland and xkbcommon at run time.
@@ -124,6 +131,11 @@ jobs:
       (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     runs-on: ubuntu-24.04
     env:
+      # whisper.cpp for any x86-64 PC with AVX2, not for the runner's own
+      # processor (its default): a build for a runner with AVX-512 crashes
+      # elsewhere (STATUS_ILLEGAL_INSTRUCTION). Its build script does not
+      # watch GGML_* settings, hence the rust-cache key.
+      GGML_NATIVE: 'OFF'
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
       CMAKE_CUDA_COMPILER_LAUNCHER: sccache
@@ -132,6 +144,8 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2
       - name: CUDA toolkit
         run: |
           wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
@@ -160,6 +174,12 @@ jobs:
     # and as an installer (Inno Setup); Others is recorded with WASAPI
     # loopback.
     runs-on: windows-latest
+    env:
+      # whisper.cpp for any x86-64 PC with AVX2, not for the runner's own
+      # processor (its default): a build for a runner with AVX-512 crashes
+      # elsewhere (STATUS_ILLEGAL_INSTRUCTION). Its build script does not
+      # watch GGML_* settings, hence the rust-cache key.
+      GGML_NATIVE: 'OFF'
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -167,6 +187,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - name: Vulkan SDK
@@ -207,11 +229,19 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'gpu') &&
       (github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'gpu'))
     runs-on: windows-2022
+    env:
+      # whisper.cpp for any x86-64 PC with AVX2, not for the runner's own
+      # processor (its default): a build for a runner with AVX-512 crashes
+      # elsewhere (STATUS_ILLEGAL_INSTRUCTION). Its build script does not
+      # watch GGML_* settings, hence the rust-cache key.
+      GGML_NATIVE: 'OFF'
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: avx2
       - uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.9.1'
