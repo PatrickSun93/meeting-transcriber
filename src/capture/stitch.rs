@@ -492,9 +492,7 @@ mod tests {
         assert_eq!(stitcher.push(content.clone()), Step::Still);
         // A picture loading in place over a few rows: kept.
         let mut loaded = content.clone();
-        for i in (150 * 4 * 200)..(150 * 4 * 230) {
-            loaded.rgba[i] = 90;
-        }
+        loaded.rgba[(150 * 4 * 200)..(150 * 4 * 230)].fill(90);
         assert_eq!(stitcher.push(loaded.clone()), Step::Still);
         assert_eq!(stitcher.finish(u32::MAX), loaded);
     }
