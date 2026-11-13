@@ -17,6 +17,9 @@ crossbeam-channel = "0.5"
 dirs = "7"
 eframe = "0.37"
 hound = "3"
+# The voice agent's model requests and streamed replies (src/agent/llm.rs):
+# tool arguments are arbitrary JSON. Already built for other dependencies.
+serde_json = "1"
 # Text drawn on screenshots (src/capture/raster.rs), in egui's own fonts.
 # Pure Rust, and the font reader egui's fonts used before.
 ab_glyph = "0.2"

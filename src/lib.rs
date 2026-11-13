@@ -2,6 +2,7 @@
 //! is "Me", everything the computer plays is "Others", and a local Whisper
 //! model writes it down. The same model also does hold-to-talk dictation.
 
+pub mod agent;
 pub mod app;
 pub mod audio;
 pub mod capture;

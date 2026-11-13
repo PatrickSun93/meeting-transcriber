@@ -2181,6 +2181,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "png",
  "screencapturekit",
+ "serde_json",
  "speakrs",
  "symphonia",
  "tiny-skia",

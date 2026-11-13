@@ -180,6 +180,12 @@ jobs:
       # elsewhere (STATUS_ILLEGAL_INSTRUCTION). Its build script does not
       # watch GGML_* settings, hence the rust-cache key.
       GGML_NATIVE: 'OFF'
+      # A short target folder: rustc's command line lists every
+      # dependency's build folder (256 of them with the current toolchain), and
+      # under D:\a\meeting-transcriber\meeting-transcriber\target it passed
+      # Windows' 32,767-character limit ("The filename or extension is too
+      # long"). The packages land in C:\t\release\package.
+      CARGO_TARGET_DIR: C:\t
     steps:
       - uses: actions/checkout@v4
       - uses: mozilla-actions/sccache-action@v0.0.11
@@ -214,11 +220,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Windows-x86_64
-          path: target/release/package/Meeting-Transcriber-Windows-x86_64.zip
+          path: C:\t\release\package\Meeting-Transcriber-Windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Meeting-Transcriber-Setup-x86_64
-          path: target/release/package/Meeting-Transcriber-Setup-x86_64.exe
+          path: C:\t\release\package\Meeting-Transcriber-Setup-x86_64.exe
 
   windows-cuda:
     # The CUDA add-on for Windows: a CUDA build and CUDA's runtime DLLs in
