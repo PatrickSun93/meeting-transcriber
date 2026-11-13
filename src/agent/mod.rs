@@ -993,7 +993,11 @@ fn run_turn(turn: u64, ctx: TurnContext, mut messages: Vec<Message>, cancel: Arc
         }
         let mut text = String::new();
         let mut calls: Vec<ToolCall> = Vec::new();
-        let mut splitter = SentenceSplitter::new();
+        let mut splitter = if spoke {
+            SentenceSplitter::continuing()
+        } else {
+            SentenceSplitter::new()
+        };
         // Decided by the first characters: a reply that starts like JSON is
         // a tool call written out, and is not spoken.
         let mut held: Option<bool> = None;

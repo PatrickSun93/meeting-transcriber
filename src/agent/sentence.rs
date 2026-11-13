@@ -14,15 +14,29 @@ const ABBREVIATIONS: &[&str] = &[
 
 /// A sentence longer than this is cut at its last comma or space.
 const MAX_CHARS: usize = 220;
+/// The first piece of an answer may end at a comma once it is this long:
+/// the voice starts sooner, and the caller hears no difference.
+const FIRST_CLAUSE_CHARS: usize = 30;
 
 #[derive(Debug, Default)]
 pub struct SentenceSplitter {
     buf: String,
+    /// Whether a piece was handed out yet.
+    started: bool,
 }
 
 impl SentenceSplitter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// For the rest of an answer whose start was already spoken: no early
+    /// cut at a comma.
+    pub fn continuing() -> Self {
+        Self {
+            started: true,
+            ..Self::default()
+        }
     }
 
     /// Adds streamed text; returns the sentences it completed.
@@ -33,6 +47,7 @@ impl SentenceSplitter {
             let rest = self.buf.split_off(end);
             let sentence = std::mem::replace(&mut self.buf, rest);
             if let Some(s) = tidy(&sentence) {
+                self.started = true;
                 out.push(s);
             }
         }
@@ -51,6 +66,13 @@ impl SentenceSplitter {
             let after = i + c.len_utf8();
             match c {
                 '\n' => return Some(after),
+                ',' | '，' | ';' | ':' if !self.started && n >= FIRST_CLAUSE_CHARS => {
+                    // "10:30" is not a clause: a space must follow.
+                    let next = chars.get(n + 1).map(|x| x.1);
+                    if c == '，' || next.is_some_and(char::is_whitespace) {
+                        return Some(after);
+                    }
+                }
                 '。' | '！' | '？' | '；' | '…' => return Some(after),
                 '.' | '!' | '?' => {
                     // Decided by what follows: no next character yet, wait.
@@ -162,6 +184,28 @@ mod tests {
     fn nothing_sayable_is_dropped() {
         assert_eq!(split(&["... ", "\n\n", "  "]), Vec::<String>::new());
         assert_eq!(split(&["Sure. ", "- ", "Bye."]), ["Sure.", "Bye."]);
+    }
+
+    #[test]
+    fn the_first_long_clause_goes_ahead_at_a_comma() {
+        assert_eq!(
+            split(&["We are open Monday to Friday from nine to five, and closed for lunch, from twelve to one."]),
+            [
+                "We are open Monday to Friday from nine to five,",
+                "and closed for lunch, from twelve to one."
+            ]
+        );
+        // Not when it is short, and not at a time.
+        assert_eq!(split(&["Sure, nine works."]), ["Sure, nine works."]);
+        let long = "I have openings at one thirty in the afternoon, two, and three.";
+        assert_eq!(SentenceSplitter::continuing().finish(), None);
+        let mut c = SentenceSplitter::continuing();
+        assert!(c.push(long).is_empty());
+        assert_eq!(c.finish().as_deref(), Some(long));
+        assert_eq!(
+            split(&["Your appointment on Monday is at 10:30 with Dr. Lee."]),
+            ["Your appointment on Monday is at 10:30 with Dr. Lee."]
+        );
     }
 
     #[test]
