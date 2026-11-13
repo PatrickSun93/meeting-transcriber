@@ -15,7 +15,8 @@ use meeting_transcriber::transcriber::{SpeechToText as _, WhisperEngine};
 use meeting_transcriber::transcript::format_time;
 use meeting_transcriber::{app, cli, import, wav};
 
-const USAGE: &str = "\
+const USAGE: &str = concat!(
+    "\
 Meeting Transcriber
 
   meeting-transcriber [--hidden]
@@ -70,7 +71,10 @@ Meeting Transcriber
       MP3, WAV, FLAC, MKV), its voices told apart as Speaker 1, 2, …
       (the speaker models, about 33 MB, are downloaded the first time).
       --no-speakers keeps one track. --save adds it to the meetings.
-";
+
+",
+    meeting_transcriber::agent_usage!()
+);
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -91,6 +95,7 @@ fn main() -> Result<()> {
         Some("--hidden") => run_app(true),
         Some("transcribe") => run_transcribe(&args[1..]),
         Some("dictate") => run_dictate(&args[1..]),
+        Some("agent") => meeting_transcriber::agent::run_cli(&args[1..]),
         Some("install") => {
             let (set, _) = flags(&args[1..], &["--no-desktop"])?;
             let exe = meeting_transcriber::platform::install(!set.contains(&"--no-desktop"))?;
