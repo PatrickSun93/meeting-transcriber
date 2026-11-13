@@ -66,6 +66,8 @@ pub struct WhisperEngine {
     threads: i32,
     /// Tells speech from noise; None if its model would not load.
     vad: Option<crate::vad::Vad>,
+    /// Encode short clips in a window their own length (see `short_window`).
+    short_clips: bool,
 }
 
 /// Segments Whisper itself rates as probably silent are dropped.
@@ -85,8 +87,32 @@ impl WhisperEngine {
         let vad = crate::vad::Vad::load()
             .inspect_err(|e| eprintln!("transcriber: without speech detection: {e:#}"))
             .ok();
-        Ok(Self { state, threads, vad })
+        Ok(Self {
+            state,
+            threads,
+            vad,
+            short_clips: false,
+        })
     }
+}
+
+impl WhisperEngine {
+    /// Whisper's encoder always looks at 30 seconds, padding a short clip
+    /// with silence; this makes it look only at the clip (and a second
+    /// more), several times faster for a few seconds of speech, slightly
+    /// less accurate. Off unless asked for: meetings and dictation keep the
+    /// full window. The voice agent turns it on, where every 100 ms counts.
+    pub fn set_short_clips(&mut self, on: bool) {
+        self.short_clips = on;
+    }
+}
+
+/// whisper.cpp's encoder context (1500 frames = 30 s) for a clip of
+/// `samples`: its length plus a second, in steps of 64, at least 384.
+pub fn short_window(samples: usize) -> i32 {
+    let seconds = samples as f32 / SAMPLE_RATE as f32 + 1.0;
+    let frames = (seconds / 30.0 * 1500.0).ceil() as i32;
+    (((frames + 63) / 64) * 64).clamp(384, 1500)
 }
 
 impl SpeechToText for WhisperEngine {
@@ -108,6 +134,9 @@ impl SpeechToText for WhisperEngine {
             params.set_initial_prompt(prompt);
         }
         params.set_n_threads(self.threads);
+        if self.short_clips {
+            params.set_audio_ctx(short_window(samples.len()));
+        }
         params.set_translate(false);
         params.set_no_context(true);
         params.set_no_timestamps(true);
@@ -423,6 +452,16 @@ pub fn run_job(engine: &mut dyn SpeechToText, job: ChunkJob, outputs: &Sender<Ou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_window_fits_the_clip_and_never_exceeds_whisper_s() {
+        let rate = SAMPLE_RATE as usize;
+        assert_eq!(short_window(rate * 2), 384, "a short clip gets the smallest window");
+        let ten = short_window(rate * 10);
+        assert!(ten >= 550 && ten % 64 == 0, "{ten}");
+        assert_eq!(short_window(rate * 29), 1500);
+        assert_eq!(short_window(rate * 60), 1500);
+    }
 
     fn job(speaker: Speaker, utterance: u64, kind: ChunkKind, start: f32) -> Job {
         Job::Chunk(ChunkJob {
