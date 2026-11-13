@@ -86,6 +86,7 @@ scripts, bug reports and AI agents such as Claude Code (see [AGENTS.md](AGENTS.m
 | `meeting-transcriber keys [--once] [--save] [--json]` | Prints each key or combination you hold and let go of, as the hotkey watcher sees it, and whether it is the dictation or the screenshot hotkey; `--save` makes it the dictation hotkey |
 | `meeting-transcriber settings [path \| get KEY \| set KEY VALUE] [--json]` | Lists, reads or changes settings, checked before saving |
 | `meeting-transcriber transcribe …` | Transcribes WAV files (see `meeting-transcriber help`) |
+| `meeting-transcriber agent …` | Experimental demo: a voice agent you talk to (see [Voice agent](#voice-agent-experimental-demo)) |
 
 ## Windows and Linux
 
@@ -339,6 +340,25 @@ meeting-transcriber transcribe --file "Weekly sync.mp4" --save
 
 On Linux, `meeting-transcriber dictate start|stop|toggle` starts and stops dictation in the running app (see [Linux](#linux-1) under Dictation).
 
+## Voice agent (experimental demo)
+
+> [!NOTE]
+> **An experiment, not a feature of the app.** macOS only, command line only, one made-up scenario.
+
+`meeting-transcriber agent` turns the listening half of the app into a conversation: you talk, a language model answers aloud, and you can interrupt it by talking over it. The scenario is the front desk of an invented clinic that can check free appointment times and book one; its data is made up and kept in memory, so nothing is booked anywhere.
+
+```bash
+ollama pull gemma4:12b
+meeting-transcriber agent        # with headphones on
+```
+
+- **What it does:** microphone → the meeting app's pause detection → the same local Whisper model → a language model, streamed (Ollama by default; OpenAI-compatible servers and the Claude API with `--api`) with two tools → the answer cut into sentences → the Mac's `say` voice. The first sentence is spoken while the rest is still being written. Talking over it for 200 ms stops the voice and the model, and only what was actually heard is kept in the conversation.
+- **What it shows:** both sides, each tool call, and for every turn how long Whisper, the model's first word, the first sentence and the first sound took. The call is saved as Markdown in the meetings folder's `Voice Agent` folder, with a latency table.
+- **How fast:** on an Apple Silicon Mac with large-v3-turbo and gemma4 12B, the voice starts about 2.5–3 s after you stop talking (3.4–4.3 s when it uses a tool). That is slower than a person; [docs/voice-agent.md](docs/voice-agent.md) says where the time goes.
+- **What it can't do:** run on Windows or Linux (no voice there yet), work on speakers with barge-in (there is no echo cancellation: use headphones, or `--no-barge-in`), stream speech recognition (Whisper runs again on each growing piece), or take phone calls.
+
+[docs/voice-agent.md](docs/voice-agent.md) explains each layer, the choices and the measurements.
+
 ## If a model download fails
 
 Models come from `huggingface.co`. An error such as `No such host is known. (os error 11001)` (Windows) or `failed to lookup address` means this computer could not reach it, usually because of a VPN, a proxy or the network's DNS, even when a browser gets through.
@@ -432,6 +452,7 @@ CI builds and tests the app on an Apple Silicon runner, and attaches a zipped `.
 | `src/app/scrolling.rs` | A scrolling screenshot in the window: its thread, the window with Stop beside the area, the outline around it |
 | `src/app/recording.rs` | A screen recording in the window: its thread, the window with the timer and Stop beside the area, the outline, the note, the banner with Transcribe, its Settings |
 | `src/app/thumbnails.rs` | The pictures the notes link, shown small above them |
+| `src/agent/` | The experimental voice agent (`agent` command): the conversation loop, streamed model replies (`llm.rs`), the demo clinic and its tools (`clinic.rs`), sentences, barge-in (`floor.rs`), `say` and the player, the record. See [docs/voice-agent.md](docs/voice-agent.md) |
 | `scripts/` | macOS `.app` bundle, Linux install and `.tar.gz`, Windows `.zip` |
 | `assets/` | Linux launcher (`.desktop`) and icon |
 
