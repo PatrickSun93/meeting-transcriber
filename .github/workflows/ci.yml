@@ -189,8 +189,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: avx2
+      # A short target folder for the checks: rustc's command line lists
+      # every dependency's build folder, and under
+      # D:\a\meeting-transcriber\meeting-transcriber\target it outgrew
+      # Windows' 32,767-character limit ("The filename or extension is too
+      # long"). The package below still builds in target\.
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          CARGO_TARGET_DIR: C:\t
       - run: cargo test
+        env:
+          CARGO_TARGET_DIR: C:\t
       - name: Vulkan SDK
         if: env.GPU == 'true'
         shell: pwsh
