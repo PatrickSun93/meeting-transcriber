@@ -355,7 +355,7 @@ meeting-transcriber agent        # with headphones on
 - **What it does:** microphone → the meeting app's pause detection → the same local Whisper model → a language model, streamed (Ollama by default; OpenAI-compatible servers and the Claude API with `--api`) with two tools → the answer cut into sentences → the Mac's `say` voice. The first sentence is spoken while the rest is still being written. Talking over it for 200 ms stops the voice and the model, and only what was actually heard is kept in the conversation.
 - **What it shows:** both sides, each tool call, and for every turn how long Whisper, the model's first word, the first sentence and the first sound took. The call is saved as Markdown in the meetings folder's `Voice Agent` folder, with a latency table.
 - **How fast:** on an Apple Silicon Mac with large-v3-turbo and gemma4 12B, the voice starts about 2.5–3 s after you stop talking (3.4–4.3 s when it uses a tool). That is slower than a person; [docs/voice-agent.md](docs/voice-agent.md) says where the time goes.
-- **What it can't do:** run on Windows or Linux (no voice there yet), work on speakers with barge-in (there is no echo cancellation: use headphones, or `--no-barge-in`), stream speech recognition (Whisper runs again on each growing piece), or take phone calls.
+- **What it can't do:** run on Windows or Linux (no voice there yet), work on speakers with barge-in (there is no echo cancellation: use headphones, or `--no-barge-in`), stream speech recognition (Whisper runs again on each growing piece), or take phone calls: a phone version is on the [roadmap](docs/voice-agent-roadmap.md), not built.
 
 [docs/voice-agent.md](docs/voice-agent.md) explains each layer, the choices and the measurements.
 

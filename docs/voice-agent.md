@@ -253,9 +253,12 @@ program can't see.
 - **Not streaming ASR**, and end of turn is a fixed pause (see above).
 - **English** by default (`--language`, `--voice` change it; the clinic
   prompt is English).
-- **One scenario**, with invented data that is reset every run.
-- **No phone line.** Phone calls (Twilio Media Streams) are the planned
-  second stage.
+- **One scenario**, with invented data that is reset every run. Times
+  earlier today are still offered and bookable.
+- **No phone line.** A phone version (Twilio Media Streams) is planned but not
+  built: [voice-agent-roadmap.md](voice-agent-roadmap.md) has the steps, the
+  effort, the risks, and why this is a pipeline of separate parts rather than
+  one speech-to-speech model.
 
 ## Testing it
 
