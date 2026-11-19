@@ -135,3 +135,11 @@ zbus = "5"
 
 [profile.release]
 lto = "thin"
+
+# eframe 0.37.0 with egui's fix #8832 (on egui's main branch, not yet in a
+# release): with the window hidden (closed to the tray, or hidden for a
+# screenshot) or minimized, opening the screenshot overlay or another
+# window of the app panicked ("the user callback was never called"). See
+# vendor/README.md; drop this once an eframe release has the fix.
+[patch.crates-io]
+eframe = { path = "vendor/eframe" }
