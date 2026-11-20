@@ -22,6 +22,13 @@ pub use system::{
 };
 pub use tray::Tray;
 
+/// Marks the key events this app types (Ctrl+V, the hotkey's mask key), so
+/// its keyboard hook can tell them from the user's. Windows flags every
+/// typed event as injected, the user's own too when they come through a
+/// remote control program (TeamViewer, AnyDesk, ToDesk…), so that flag
+/// can't tell them apart.
+const OWN_INPUT: usize = 0x4D54_4B59;
+
 /// What the system allows the app, for `meeting-transcriber doctor`: the
 /// keyboard hook needs no permission on Windows.
 pub fn diagnostics() -> Vec<(&'static str, String)> {

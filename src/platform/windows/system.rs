@@ -59,7 +59,7 @@ fn key_input(key: VIRTUAL_KEY, up: bool) -> INPUT {
                 wScan: 0,
                 dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: super::OWN_INPUT,
             },
         },
     }

@@ -24,7 +24,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLKHF_UP, MSG,
+    CallNextHookEx, DispatchMessageW, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_UP, MSG,
     PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP, WM_TIMER,
 };
 
@@ -167,9 +167,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code == HC_ACTION as i32 {
         // SAFETY: for HC_ACTION, `lparam` points to the event's description.
         let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-        // Keys typed by programs (this one's Ctrl+V and mask key, a remote
-        // desktop's replay) are not the user's.
-        if info.flags.0 & LLKHF_INJECTED.0 == 0 {
+        // This app's own Ctrl+V and mask key are not the user's. Other typed
+        // keys can be: a remote control program types everything the user
+        // presses.
+        if info.dwExtraInfo != super::OWN_INPUT {
             let up = info.flags.0 & LLKHF_UP.0 != 0;
             let swallow = HOOK.with(|hook| {
                 hook.borrow_mut()
@@ -253,7 +254,7 @@ fn mask() {
                 wScan: 0,
                 dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: super::OWN_INPUT,
             },
         },
     };
