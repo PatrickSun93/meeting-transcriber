@@ -204,6 +204,11 @@ impl HotkeyWatch {
     /// compared with the hotkey: all of them, once the first is let go of.
     pub fn capture_next(&self, on: bool) {
         self.capture.store(on, Ordering::Relaxed);
+        // Windows may have removed its keyboard hook unnoticed.
+        #[cfg(windows)]
+        if on {
+            imp::rehook();
+        }
     }
 
     pub fn capturing(&self) -> bool {

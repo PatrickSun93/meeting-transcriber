@@ -6,14 +6,18 @@
 //! type into the app in front.
 //!
 //! Windows silently removes a low-level hook that is ever too slow to
-//! answer, and nothing tells the app. So the thread runs at the highest
-//! priority (Whisper keeps every core busy while it transcribes) and puts
-//! the hook in afresh now and then, which revives one that was removed.
+//! answer, and nothing tells the app. So the hook only follows the keys:
+//! what it finds goes to the app from another thread (the app's side can
+//! wait on the window's locks). Its thread runs at the highest priority
+//! (Whisper keeps every core busy while it transcribes) and puts the hook
+//! in afresh every few seconds, and when keys are to be recorded, which
+//! revives one that was removed.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::{Context as _, Result, anyhow};
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Sender, unbounded};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
@@ -34,9 +38,13 @@ use crate::dictation::hotkey::{Mods, Outcome, Shortcut, Tracker, win};
 /// The hook needs no permission, so there is nothing to add.
 pub const HOTKEY_HINT: &str = "";
 /// How often the hook is put in afresh, in milliseconds.
-const REHOOK_EVERY_MS: u32 = 30_000;
+const REHOOK_EVERY_MS: u32 = 5_000;
 /// Posted to the hook's thread to type the mask key (see `mask`).
 const WM_MASK: u32 = WM_APP + 1;
+/// Posted to the hook's thread to put the hook in afresh now.
+const WM_REHOOK: u32 = WM_APP + 2;
+/// The hook's thread, once it runs (0 before).
+static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 /// An unassigned virtual-key code: typed, it does nothing.
 const MASK_KEY: u16 = 0xE8;
 
@@ -44,7 +52,8 @@ const MASK_KEY: u16 = 0xE8;
 /// lives with the hook's thread.
 struct Hook {
     watch: HotkeyWatch,
-    on_event: Box<dyn Fn(KeyEvent) + Send>,
+    /// To the thread that hands what the hook finds to the app.
+    notes: Sender<Note>,
     tracker: Tracker,
     presses: PressTracker,
     /// Keys whose press was kept from the app in front: their repeats and
@@ -53,6 +62,23 @@ struct Hook {
     /// Keys whose press the app in front saw: so are their repeats and
     /// release, or it would think them stuck down.
     passed: Vec<u32>,
+}
+
+/// What the hook finds, for the thread that passes it on.
+enum Note {
+    Event(KeyEvent),
+    /// A line for the log.
+    Log(String),
+}
+
+impl Hook {
+    fn send(&self, event: KeyEvent) {
+        let _ = self.notes.send(Note::Event(event));
+    }
+
+    fn log(&self, line: String) {
+        let _ = self.notes.send(Note::Log(line));
+    }
 }
 
 thread_local! {
@@ -83,10 +109,22 @@ pub fn hotkey_held(key: &Shortcut) -> Option<bool> {
 }
 
 pub(in crate::platform) fn start_hotkey(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>) -> Result<()> {
+    let (notes, received) = unbounded();
+    std::thread::Builder::new()
+        .name("hotkey events".into())
+        .spawn(move || {
+            for note in received {
+                match note {
+                    Note::Event(event) => on_event(event),
+                    Note::Log(line) => eprintln!("{line}"),
+                }
+            }
+        })
+        .context("could not start the hotkey thread")?;
     let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
     std::thread::Builder::new()
         .name("hotkey".into())
-        .spawn(move || run_hook(watch, on_event, &ready_tx))
+        .spawn(move || run_hook(watch, notes, &ready_tx))
         .context("could not start the hotkey thread")?;
     ready_rx
         .recv()
@@ -106,11 +144,11 @@ fn install() -> windows::core::Result<HHOOK> {
 /// Installs the hook and runs this thread's message loop, which calls it.
 /// Reports on `ready` whether the hook could be installed, and with
 /// `Stopped` if the loop ever ends.
-fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &Sender<Result<()>>) {
+fn run_hook(watch: HotkeyWatch, notes: Sender<Note>, ready: &Sender<Result<()>>) {
     HOOK.with(|hook| {
         *hook.borrow_mut() = Some(Hook {
             watch,
-            on_event,
+            notes,
             tracker: Tracker::default(),
             presses: PressTracker::default(),
             swallowed: Vec::new(),
@@ -128,6 +166,8 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
             return;
         }
     };
+    // SAFETY: a plain query of this thread's id.
+    HOOK_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
     let _ = ready.send(Ok(()));
     let mut msg = MSG::default();
     // SAFETY: a standard message loop on this thread; GetMessageW returns
@@ -136,7 +176,7 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
     unsafe {
         SetTimer(None, 0, REHOOK_EVERY_MS, None);
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-            if msg.message == WM_TIMER && msg.hwnd.is_invalid() {
+            if (msg.message == WM_TIMER || msg.message == WM_REHOOK) && msg.hwnd.is_invalid() {
                 // The new hook goes in before the old one comes out; no key
                 // is handled in between, as only this loop calls the hook.
                 if let Ok(fresh) = install() {
@@ -156,8 +196,8 @@ fn run_hook(watch: HotkeyWatch, on_event: Box<dyn Fn(KeyEvent) + Send>, ready: &
     HOOK.with(|hook| {
         if let Some(hook) = hook.borrow_mut().take() {
             // Whatever was held is let go of, rather than recording on.
-            (hook.on_event)(KeyEvent::Up);
-            (hook.on_event)(KeyEvent::Stopped);
+            hook.send(KeyEvent::Up);
+            hook.send(KeyEvent::Stopped);
         }
     });
 }
@@ -193,25 +233,25 @@ fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
     // While keys are recorded, what the hook sees goes to the log, to tell
     // a key Windows never showed it from one the window missed.
     if capturing {
-        eprintln!(
+        hook.log(format!(
             "hotkey: recording keys, saw {code:#04x} {}",
             if up { "up" } else { "down" }
-        );
+        ));
     }
     for press in hook.presses.key(&win::CODES, &hook.watch, code, !up) {
-        (hook.on_event)(KeyEvent::Pressed(press));
+        hook.send(KeyEvent::Pressed(press));
     }
     match hook.tracker.key(&win::CODES, &target, capturing, code, !up) {
-        Some(Outcome::Down) => (hook.on_event)(KeyEvent::Down),
-        Some(Outcome::Up) => (hook.on_event)(KeyEvent::Up),
+        Some(Outcome::Down) => hook.send(KeyEvent::Down),
+        Some(Outcome::Up) => hook.send(KeyEvent::Up),
         Some(Outcome::Captured(shortcut)) => {
-            eprintln!("hotkey: recorded {}", shortcut.name());
+            hook.log(format!("hotkey: recorded {}", shortcut.name()));
             hook.watch.capture_next(false);
-            (hook.on_event)(KeyEvent::Captured(shortcut));
+            hook.send(KeyEvent::Captured(shortcut));
         }
         Some(Outcome::CaptureCancelled) => {
             hook.watch.capture_next(false);
-            (hook.on_event)(KeyEvent::CaptureCancelled);
+            hook.send(KeyEvent::CaptureCancelled);
         }
         None => {}
     }
@@ -250,6 +290,18 @@ fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
         hook.passed.push(code);
     }
     swallow
+}
+
+/// Puts the hook in afresh, in case Windows removed it: before keys are
+/// recorded, so a removed hook does not leave "Record keys…" waiting.
+pub(in crate::platform) fn rehook() {
+    let thread = HOOK_THREAD.load(Ordering::Relaxed);
+    if thread != 0 {
+        // SAFETY: a message to the hook's thread, which takes it in its loop.
+        unsafe {
+            let _ = PostThreadMessageW(thread, WM_REHOOK, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 /// Types the mask key, which does nothing, so that letting go of Alt or the

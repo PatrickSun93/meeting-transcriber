@@ -13,8 +13,8 @@ mod install;
 mod system;
 mod tray;
 
-pub(super) use hotkey::start_hotkey;
 pub use hotkey::{HOTKEY_HINT, hotkey_held};
+pub(super) use hotkey::{rehook, start_hotkey};
 pub use install::{install, install_dir, installed, open_installed, running_from_temp, uninstall};
 pub use system::{
     AUTOSTART, DICTATION, HAS_TRAY, PASTE_SHORTCUT, hide_app, open_at_login, open_hotkey_settings, paste, play_sound,
