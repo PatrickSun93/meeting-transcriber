@@ -190,6 +190,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
     let target = hook.watch.key();
     let capturing = hook.watch.capturing();
+    // While keys are recorded, what the hook sees goes to the log, to tell
+    // a key Windows never showed it from one the window missed.
+    if capturing {
+        eprintln!(
+            "hotkey: recording keys, saw {code:#04x} {}",
+            if up { "up" } else { "down" }
+        );
+    }
     for press in hook.presses.key(&win::CODES, &hook.watch, code, !up) {
         (hook.on_event)(KeyEvent::Pressed(press));
     }
@@ -197,6 +205,7 @@ fn on_key(hook: &mut Hook, code: u32, up: bool) -> bool {
         Some(Outcome::Down) => (hook.on_event)(KeyEvent::Down),
         Some(Outcome::Up) => (hook.on_event)(KeyEvent::Up),
         Some(Outcome::Captured(shortcut)) => {
+            eprintln!("hotkey: recorded {}", shortcut.name());
             hook.watch.capture_next(false);
             (hook.on_event)(KeyEvent::Captured(shortcut));
         }

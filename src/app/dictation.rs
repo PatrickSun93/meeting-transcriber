@@ -323,6 +323,9 @@ impl App {
     fn poll_key_events(&mut self) {
         let events: Vec<KeyEvent> = self.dict.key_events.1.try_iter().collect();
         for event in events {
+            if matches!(event, KeyEvent::Captured(_) | KeyEvent::CaptureCancelled) {
+                eprintln!("hotkey: the window got {event:?} for {:?}", self.dict.keys_for);
+            }
             match event {
                 KeyEvent::Captured(key) => match self.dict.keys_for {
                     KeysFor::Dictation => self.dict.settings.hotkey = key.name(),
@@ -356,6 +359,7 @@ impl App {
         if let Some(watch) = &self.dict.hotkey {
             self.dict.keys_for = of;
             watch.capture_next(true);
+            eprintln!("hotkey: recording keys for {of:?}");
         }
     }
 
